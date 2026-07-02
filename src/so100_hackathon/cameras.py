@@ -6,28 +6,41 @@ camera, wall-clock timestamps), using OpenCV instead of nokhwa.
 
 from __future__ import annotations
 
-import json
-import subprocess
 import threading
 import time
 
 import cv2
 import rerun as rr
 
-# The Mac's internal webcam is never a recording camera on this rig. Older Macs report
-# "FaceTime HD Camera", newer ones "MacBook Pro Camera".
+# The Mac's internal webcam is never a recording camera on this rig. The device type is
+# authoritative ("...BuiltIn..." on macOS); names are a fallback for older reporting.
 BUILTIN_NAME_HINTS = ("facetime", "built-in", "macbook")
 
 
-def _camera_names_macos() -> list[str]:
-    """Camera names from system_profiler, which enumerates the same AVFoundation device
-    list OpenCV's indices follow. Empty on any failure (then no name-based filtering)."""
+def _cameras_in_opencv_order() -> list[tuple[str, bool]] | None:
+    """(name, is_builtin) per camera, in OpenCV's index order. None if unavailable.
+
+    OpenCV's AVFoundation backend (cap_avfoundation_mac.mm, checked at the installed
+    version) enumerates devicesWithMediaType Video + Muxed and then SORTS BY uniqueID —
+    replicate exactly that. Naive orderings mis-map: system_profiler, the raw
+    devicesWithMediaType list, and discovery sessions all put the built-in first on this
+    rig, while the uniqueID sort puts it last (USB uniqueIDs are "0x..." hex strings,
+    which sort before the built-in's UUID).
+    """
     try:
-        out = subprocess.run(["system_profiler", "SPCameraDataType", "-json"], capture_output=True, timeout=10, check=True)
-        cameras = json.loads(out.stdout).get("SPCameraDataType", [])
-        return [str(cam.get("_name", "")) for cam in cameras]
-    except Exception:
-        return []
+        import AVFoundation as av
+    except ImportError:
+        return None
+    # pyobjc loads ObjC names lazily; pyrefly can't see them.
+    devices = list(av.AVCaptureDevice.devicesWithMediaType_(av.AVMediaTypeVideo))  # pyrefly: ignore[missing-attribute]
+    devices += list(av.AVCaptureDevice.devicesWithMediaType_(av.AVMediaTypeMuxed))  # pyrefly: ignore[missing-attribute]
+    devices.sort(key=lambda device: str(device.uniqueID()))
+    cameras: list[tuple[str, bool]] = []
+    for device in devices:
+        name = str(device.localizedName())
+        builtin = "BuiltIn" in str(device.deviceType()) or any(hint in name.lower() for hint in BUILTIN_NAME_HINTS)
+        cameras.append((name, builtin))
+    return cameras
 
 
 def detect_camera_indices(max_index: int = 4) -> tuple[int, ...]:
@@ -41,13 +54,13 @@ def detect_camera_indices(max_index: int = 4) -> tuple[int, ...]:
         if ok:
             found.append(index)
 
-    names = _camera_names_macos()
-    if len(names) != len(found):  # can't map names to indices confidently: filter nothing
+    cameras = _cameras_in_opencv_order()
+    if cameras is None:
         return tuple(found)
     kept: list[int] = []
     for index in found:
-        name = names[index]
-        if any(hint in name.lower() for hint in BUILTIN_NAME_HINTS):
+        name, builtin = cameras[index] if index < len(cameras) else ("?", False)
+        if builtin:
             print(f"camera {index} ({name}): built-in, skipping — pass --cameras {index} to use it anyway", flush=True)
         else:
             kept.append(index)

@@ -25,6 +25,10 @@ tyro = "*"
 pyserial = "*"
 py-opencv = "*"
 
+[tool.pixi.target.osx-arm64.dependencies]
+# Camera enumeration in OpenCV's exact index order (to skip the built-in webcam).
+pyobjc-framework-avfoundation = "*"
+
 [tool.pixi.pypi-dependencies]
 so100_hackathon = { path = ".", editable = true }
 feetech-servo-sdk = ">=1.0.0"
