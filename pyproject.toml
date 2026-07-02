@@ -1,6 +1,7 @@
 [project]
-authors = [{name = "Pablo Vela", email = "pablovela5620@gmail.com"}]
+authors = [{name = "Rerun.io", email = "opensource@rerun.io"}]
 dependencies = []
+license = "MIT OR Apache-2.0"
 name = "so100-hackathon"
 requires-python = ">= 3.11"
 version = "0.1.0"
