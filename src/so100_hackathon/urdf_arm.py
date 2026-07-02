@@ -72,6 +72,11 @@ class UrdfArm:
     """Display sign per joint (see JOINT_DISPLAY_SIGNS)."""
     collision_geometries_path: str
     """Entity path of this model's collision meshes (for hiding in blueprints)."""
+    tree: rr.urdf.UrdfTree
+    """Parsed URDF, retained so the static geometry can be (re-)logged per recording."""
+    urdf_path: Path
+    color: tuple[float, float, float] | None
+    translation: tuple[float, float, float]
 
     @classmethod
     def create(
@@ -85,39 +90,50 @@ class UrdfArm:
         color: tuple[float, float, float] | None = None,
     ) -> UrdfArm:
         tree = rr.urdf.UrdfTree.from_file_path(urdf_path, entity_path_prefix=name, frame_prefix=f"{name}/")
-        tree.log_urdf_to_recording()
-        if color is not None:
-            # Tint every visual mesh, overriding the URDF's material colors.
-            links = [tree.root_link()] + [tree.get_joint_child(joint) for joint in tree.joints()]
-            for link in links:
-                for visual_path in tree.get_visual_geometry_paths(link):
-                    rr.log(visual_path, rr.Asset3D.from_fields(albedo_factor=[*color, 1.0]), static=True)
-        # The URDF's frames form an island: anchor its root frame to the entity tree
-        # (parent_frame defaults to the implicit root frame here), or nothing renders.
-        root_frame = f"{name}/{tree.root_link().name}"
-        rpy, offset = MODEL_CORRECTIONS[urdf_path.name]
-        rr.log(
-            name,
-            rr.Transform3D(
-                translation=tuple(t + o for t, o in zip(translation, offset, strict=True)),
-                mat3x3=_rpy_matrix(*rpy),
-                child_frame=root_frame,
-            ),
-            static=True,
-        )
-
         joints = sorted((j for j in tree.joints() if j.joint_type == "revolute"), key=lambda j: int(j.name))
         if center_angles_deg is not None:
             center_angles_rad = [math.radians(deg) for deg in center_angles_deg]
         else:
             center_angles_rad = [(j.limit_lower + j.limit_upper) / 2.0 for j in joints]
-        return cls(
+        arm = cls(
             name=name,
             joints=joints,
             calib_modes=[calib.calib_mode for calib in calibration],
             center_angles_rad=center_angles_rad,
             joint_signs=JOINT_DISPLAY_SIGNS[urdf_path.name],
             collision_geometries_path=f"{name}/{tree.name}/collision_geometries",
+            tree=tree,
+            urdf_path=urdf_path,
+            color=color,
+            translation=translation,
+        )
+        arm.log_static()
+        return arm
+
+    def log_static(self) -> None:
+        """(Re-)log the URDF's static geometry into the current recording.
+
+        The meshes are static data keyed by recording id, so this must run once per
+        recording (e.g. the dataset collector re-logs it for every take)."""
+        self.tree.log_urdf_to_recording()
+        if self.color is not None:
+            # Tint every visual mesh, overriding the URDF's material colors.
+            links = [self.tree.root_link()] + [self.tree.get_joint_child(joint) for joint in self.tree.joints()]
+            for link in links:
+                for visual_path in self.tree.get_visual_geometry_paths(link):
+                    rr.log(visual_path, rr.Asset3D.from_fields(albedo_factor=[*self.color, 1.0]), static=True)
+        # The URDF's frames form an island: anchor its root frame to the entity tree
+        # (parent_frame defaults to the implicit root frame here), or nothing renders.
+        root_frame = f"{self.name}/{self.tree.root_link().name}"
+        rpy, offset = MODEL_CORRECTIONS[self.urdf_path.name]
+        rr.log(
+            self.name,
+            rr.Transform3D(
+                translation=tuple(t + o for t, o in zip(self.translation, offset, strict=True)),
+                mat3x3=_rpy_matrix(*rpy),
+                child_frame=root_frame,
+            ),
+            static=True,
         )
 
     def joint_angle_rad(self, joint_index: int, calibrated: float) -> float:

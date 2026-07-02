@@ -14,6 +14,9 @@ The page (served at ``/``) bootstraps the Rerun web viewer itself using the
 from the control server, so everything is same-origin and offline-friendly). The top
 80% is the viewer, the bottom 20% is a "start" / "stop" control bar.
 
+The recorded data is the real SO-100 arms + cameras (see ``apis/log_arms.py``), or a
+synthetic stream with ``--fake``.
+
 While recording, data is *teed* (``rr.set_sinks``) to two sinks at once:
 
 * a ``GrpcSink`` pointing at the proxy server (so the viewer shows it live), and
@@ -38,6 +41,7 @@ import json
 import math
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -51,21 +55,54 @@ import numpy as np
 import rerun as rr
 import tyro
 
+from so100_hackathon.apis.log_arms import ArmSession, LogArmsConfig
+from so100_hackathon.rerun_config import LiveViewerConfig
+
 # The catalog client refuses localhost tokens unless we opt out of the host check.
 os.environ.setdefault("RERUN_INSECURE_SKIP_HOST_CHECK", "1")
+# Low-latency micro-batcher (8 ms flush, == ChunkBatcherConfig.LOW_LATENCY) for every
+# recording in this process, the live preview, and the proxy subprocess (inherits env).
+os.environ.setdefault("RERUN_FLUSH_TICK_SECS", "0.008")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # TODO(calude): make these into command line args
 APP_ID = "so-100"
 DATASET_NAME = "recordings"
-FLUSH_TICK_SECS = 0.01  # micro-batcher flush interval (10 ms)
 
 # The web-viewer npm package is fetched once and served by the control server. Its
 # version must match the installed rerun-sdk (the wasm-bindgen glue is build-specific).
 WEB_VIEWER_VERSION = rr.__version__
 WEB_VIEWER_FILES = ("index.js", "re_viewer.js", "re_viewer_bg.wasm")
 NPM_TARBALL = "https://registry.npmjs.org/@rerun-io/web-viewer/-/web-viewer-{version}.tgz"
+
+
+@dataclasses.dataclass
+class _NoViewerConfig(LiveViewerConfig):
+    """A ``LiveViewerConfig`` whose ``__post_init__`` does nothing.
+
+    The dataset collector owns all Rerun setup (recording ids, sinks, ports). The arm
+    session must NOT spawn a native viewer or re-init the recording, which the normal
+    ``LiveViewerConfig.__post_init__`` would do.
+    """
+
+    def __post_init__(self) -> None:
+        pass
+
+
+def pick_port(preferred: int) -> int:
+    """Return ``preferred`` if it is free, otherwise an OS-assigned free port."""
+    for candidate in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("localhost", candidate))
+                port = sock.getsockname()[1]
+            except OSError:
+                continue
+        if candidate != preferred:
+            print(f"port {preferred} is busy, using {port} instead", flush=True)
+        return port
+    raise RuntimeError("could not find a free port")
 
 
 def ensure_web_viewer_assets(version: str) -> dict[str, Path]:
@@ -89,13 +126,56 @@ def ensure_web_viewer_assets(version: str) -> dict[str, Path]:
     return targets
 
 
+class FakeSource:
+    """A synthetic data source (``--fake``): a spinning point cloud + a sine plot.
+
+    Same interface as :class:`~so100_hackathon.apis.log_arms.ArmSession`, so the
+    recorder drives either one interchangeably.
+    """
+
+    def __init__(self, fps: float) -> None:
+        self.fps = fps
+        self._step = 0
+
+    def start(self) -> None:
+        pass
+
+    def begin(self) -> None:
+        pass
+
+    def log_frame(self) -> None:
+        step = self._step
+        t = step * 0.05
+        rr.set_time("step", sequence=step)
+
+        angles = np.linspace(0.0, 2.0 * math.pi, 64, endpoint=False) + t
+        radius = 1.0 + 0.25 * math.sin(t)
+        positions = np.column_stack(
+            [radius * np.cos(angles), radius * np.sin(angles), 0.15 * np.sin(3.0 * angles + t)]
+        )
+        colors = np.column_stack(
+            [
+                (0.5 + 0.5 * np.sin(angles)) * 255,
+                (0.5 + 0.5 * np.cos(angles)) * 255,
+                np.full_like(angles, 200.0),
+            ]
+        ).astype(np.uint8)
+        rr.log("world/points", rr.Points3D(positions, colors=colors, radii=0.05))
+        rr.log("plot/sine", rr.Scalars(math.sin(t)))
+        self._step += 1
+
+    def close(self) -> None:
+        pass
+
+
 class Recorder:
     """Owns the tee'd recording: streams to the proxy + a file, registers on stop."""
 
-    def __init__(self, proxy_uri: str, catalog_uri: str, recordings_dir: Path) -> None:
+    def __init__(self, proxy_uri: str, catalog_uri: str, recordings_dir: Path, source: FakeSource | ArmSession) -> None:
         self._proxy_uri = proxy_uri
         self._catalog_uri = catalog_uri
         self._recordings_dir = recordings_dir
+        self._source = source
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -125,12 +205,12 @@ class Recorder:
             self._current_file = path
 
             # A fresh recording id per take, so each file is a distinct catalog segment.
-            # A 10 ms micro-batcher flush keeps the live view low-latency.
+            # Low-latency batcher so the live view keeps up while we also write to disk.
             self._rec = rr.RecordingStream(
                 APP_ID,
                 recording_id=rec_id,
                 make_default=True,
-                batcher_config=rr.ChunkBatcherConfig(flush_tick=FLUSH_TICK_SECS),
+                batcher_config=rr.ChunkBatcherConfig.LOW_LATENCY(),
             )
 
             # Tee: everything logged now goes to BOTH the proxy and the file.
@@ -209,35 +289,14 @@ class Recorder:
         }
 
     def _run(self) -> None:
-        step = 0
+        self._source.begin()  # (re-)log static series + blueprint into this recording
+        frame_time = 1.0 / self._source.fps
         while not self._stop.is_set():
-            t = step * 0.05
-            rr.set_time("step", sequence=step)
-
-            # A spinning point cloud so there is something to look at.
-            angles = np.linspace(0.0, 2.0 * math.pi, 64, endpoint=False) + t
-            radius = 1.0 + 0.25 * math.sin(t)
-            positions = np.column_stack(
-                [
-                    radius * np.cos(angles),
-                    radius * np.sin(angles),
-                    0.15 * np.sin(3.0 * angles + t),
-                ]
-            )
-            colors = np.column_stack(
-                [
-                    (0.5 + 0.5 * np.sin(angles)) * 255,
-                    (0.5 + 0.5 * np.cos(angles)) * 255,
-                    np.full_like(angles, 200.0),
-                ]
-            ).astype(np.uint8)
-            rr.log("world/points", rr.Points3D(positions, colors=colors, radii=0.05))
-
-            # A scalar plot.
-            rr.log("plot/sine", rr.Scalars(math.sin(t)))
-
-            step += 1
-            time.sleep(1.0 / 30.0)
+            loop_start = time.monotonic()
+            self._source.log_frame()
+            sleep_s = frame_time - (time.monotonic() - loop_start)
+            if sleep_s > 0.0:
+                time.sleep(sleep_s)
 
 
 # Served at `/`. The viewer is bootstrapped from the `@rerun-io/web-viewer` package
@@ -410,56 +469,82 @@ def main(config: Config) -> None:
     # Web-viewer assets (served same-origin from the control server, see below).
     assets = ensure_web_viewer_assets(WEB_VIEWER_VERSION)
 
+    # Fall back to a free port if a preferred one is already taken.
+    grpc_port = pick_port(config.grpc_port)
+    catalog_port = pick_port(config.catalog_port)
+    control_port = pick_port(config.control_port)
+
     # 1) gRPC proxy server -- the live data source the viewer streams from.
     #    It runs in its OWN process: `set_sinks` in this process would otherwise
     #    tear down an in-process `serve_grpc` server (the server is the sink),
     #    breaking the tee. As a separate process it survives our sink swaps.
-    proxy_uri = f"rerun+http://localhost:{config.grpc_port}/proxy"
+    proxy_uri = f"rerun+http://localhost:{grpc_port}/proxy"
     proxy_proc = subprocess.Popen(
         [
             sys.executable,
             "-c",
-            f"import rerun as rr, time; rr.init('{APP_ID}'); rr.serve_grpc(grpc_port={config.grpc_port}); time.sleep(1e9)",
+            f"import rerun as rr, time; rr.init('{APP_ID}'); rr.serve_grpc(grpc_port={grpc_port}); time.sleep(1e9)",
         ],
     )
     print(f"gRPC proxy server:  {proxy_uri}")
 
     # 2) OSS catalog server -- recordings are registered here on stop.
-    catalog_uri = f"rerun+http://localhost:{config.catalog_port}"
+    catalog_uri = f"rerun+http://localhost:{catalog_port}"
     catalog_proc = subprocess.Popen(
-        [sys.executable, "-m", "rerun", "server", "--port", str(config.catalog_port)],
+        [sys.executable, "-m", "rerun", "server", "--port", str(catalog_port)],
     )
     print(f"OSS catalog server: {catalog_uri}")
-    time.sleep(2.0)  # give the subprocess servers a moment to bind before the viewer connects
 
-    # 3) Control server -- serves the page, the web-viewer assets, and the start/stop API.
-    #    The viewer's `index.js` dynamically imports `./re_viewer` (extensionless) and
-    #    fetches `./re_viewer_bg.wasm`, both relative to itself -- hence the `/viewer/` routes.
-    asset_routes = {
-        "/viewer/index.js": (assets["index.js"], "text/javascript"),
-        "/viewer/re_viewer": (assets["re_viewer.js"], "text/javascript"),
-        "/viewer/re_viewer.js": (assets["re_viewer.js"], "text/javascript"),
-        "/viewer/re_viewer_bg.wasm": (assets["re_viewer_bg.wasm"], "application/wasm"),
-    }
-    recorder = Recorder(proxy_uri, catalog_uri, config.recordings_dir)
-    page = build_page(proxy_uri).encode("utf-8")
-    httpd = ThreadingHTTPServer(("localhost", config.control_port), make_handler(recorder, page, asset_routes))
-    page_url = f"http://localhost:{config.control_port}"
-    print(f"Control server:     {page_url}  (open this)")
-    print()
-
-    if config.open_browser:
-        import webbrowser
-
-        webbrowser.open(page_url)
-
+    recorder: Recorder | None = None
+    source: FakeSource | ArmSession | None = None
+    httpd: ThreadingHTTPServer | None = None
     try:
+        time.sleep(2.0)  # give the subprocess servers a moment to bind
+
+        # Stream to the proxy before the first recording, so the viewer shows a live preview
+        # (and static data logged when the source opens goes to a real sink, not a dropped buffer).
+        rr.set_sinks(rr.GrpcSink(url=proxy_uri))
+
+        # The data source: synthetic (--fake) or the real SO-100 arms + cameras.
+        if config.fake:
+            source = FakeSource(config.fps)
+            print("data source:        FAKE (synthetic stream)", flush=True)
+        else:
+            source = ArmSession(LogArmsConfig(fps=config.fps, rr_config=_NoViewerConfig()))
+            print("data source:        real SO-100 arms", flush=True)
+        source.start()  # start the cameras now that a sink is attached
+
+        # 3) Control server -- serves the page, the web-viewer assets, and the start/stop API.
+        #    The viewer's `index.js` dynamically imports `./re_viewer` (extensionless) and
+        #    fetches `./re_viewer_bg.wasm`, both relative to itself -- hence the `/viewer/` routes.
+        asset_routes = {
+            "/viewer/index.js": (assets["index.js"], "text/javascript"),
+            "/viewer/re_viewer": (assets["re_viewer.js"], "text/javascript"),
+            "/viewer/re_viewer.js": (assets["re_viewer.js"], "text/javascript"),
+            "/viewer/re_viewer_bg.wasm": (assets["re_viewer_bg.wasm"], "application/wasm"),
+        }
+        recorder = Recorder(proxy_uri, catalog_uri, config.recordings_dir, source)
+        page = build_page(proxy_uri).encode("utf-8")
+        httpd = ThreadingHTTPServer(("localhost", control_port), make_handler(recorder, page, asset_routes))
+        page_url = f"http://localhost:{control_port}"
+        print(f"Control server:     {page_url}  (open this)")
+        print()
+
+        if config.open_browser:
+            import webbrowser
+
+            webbrowser.open(page_url)
+
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nshutting down")
     finally:
-        recorder.stop()
-        httpd.shutdown()
+        if recorder is not None:
+            recorder.stop()
+        if source is not None:
+            source.close()
+        if httpd is not None:
+            httpd.shutdown()
         proxy_proc.terminate()
         catalog_proc.terminate()
 
@@ -479,6 +564,12 @@ class Config:
 
     recordings_dir: Path = REPO_ROOT / "recordings"
     """Folder the ``.rrd`` files are written to (default: ``recordings/`` at repo root)."""
+
+    fake: bool = False
+    """Record a synthetic stream (spinning point cloud) instead of the real SO-100 arms."""
+
+    fps: float = 30.0
+    """Target logging rate (arm poll rate when recording real arms)."""
 
     open_browser: bool = True
     """Open the page in the default browser on startup."""

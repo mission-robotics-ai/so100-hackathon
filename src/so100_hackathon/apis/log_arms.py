@@ -222,6 +222,82 @@ def _drive_follower(leader: Arm, follower: Arm, *, blend: float, max_step: float
     rr.log(f"{follower.name}/goal", rr.Scalars(goals_calibrated))
 
 
+class ArmSession:
+    """Reusable non-teleop arm + camera logging, for embedding in an external loop.
+
+    Unlike ``main`` (which owns the viewer, the loop, and teleop), this opens the hardware
+    once and exposes the per-frame pieces so another driver (e.g. the dataset collector) can
+    control the recording lifecycle:
+
+    * ``begin()`` — call after starting each new recording; (re-)logs the static per-motor
+      series names and the blueprint into the now-current recording.
+    * ``log_frame()`` — read every arm once and log it, tolerating transient bus glitches.
+    * ``close()`` — stop the cameras and close the buses.
+
+    The cameras stream on their own threads (started here) into whatever recording is the
+    current default when they log, so they keep running across recordings.
+    """
+
+    def __init__(self, config: LogArmsConfig) -> None:
+        self.config = config
+        self.arms = _open_arms(config)
+        camera_indices = detect_camera_indices() if config.cameras is None else config.cameras
+        self.streamers = [CameraStreamer(index, jpeg_quality=config.jpeg_quality) for index in camera_indices]
+        self._reconnect_every = max(1, int(config.fps))  # attempt a reconnect roughly once a second
+        print(f"arm session: {len(self.arms)} arm(s) + {len(self.streamers)} camera(s)", flush=True)
+
+    @property
+    def fps(self) -> float:
+        return self.config.fps
+
+    def start(self) -> None:
+        """Start the camera threads. Call once a log sink is attached (they stream immediately)."""
+        for streamer in self.streamers:
+            streamer.start()
+
+    def begin(self) -> None:
+        for arm in self.arms:
+            motor_names = [calib.motor_name for calib in arm.calibration]
+            for subpath in METRIC_SUBPATHS:
+                rr.log(f"{arm.name}/{subpath}", rr.SeriesLines(names=motor_names), static=True)
+            if arm.urdf is not None:
+                arm.urdf.log_static()  # re-log the meshes into this take's recording
+        rr.send_blueprint(
+            create_blueprint(
+                [arm.name for arm in self.arms],
+                camera_paths=[streamer.entity_path for streamer in self.streamers],
+                collision_paths=[arm.urdf.collision_geometries_path for arm in self.arms if arm.urdf is not None],
+                show_urdf=self.config.urdf,
+                window_seconds=self.config.window_seconds,
+            ),
+            make_active=True,
+        )
+
+    def log_frame(self) -> None:
+        rr.set_time("time", timestamp=time.time())
+        for arm in self.arms:
+            # Tolerate transient bus glitches per arm, so one unplugged arm never stalls the others.
+            try:
+                _log_arm(arm)
+                arm.errors = 0
+            except RuntimeError as error:
+                arm.errors += 1
+                if arm.errors == 1 or arm.errors % self._reconnect_every == 0:
+                    print(f"{arm.name}: bus read failed ({arm.errors}): {error}", flush=True)
+                if arm.errors % self._reconnect_every == 0:
+                    try:
+                        arm.bus.reconnect()
+                        print(f"{arm.name}: reconnected", flush=True)
+                    except (RuntimeError, OSError):
+                        pass  # device still gone; keep retrying
+
+    def close(self) -> None:
+        for streamer in self.streamers:
+            streamer.stop()
+        for arm in self.arms:
+            arm.bus.close()
+
+
 def main(config: LogArmsConfig) -> None:
     arms = _open_arms(config)
 

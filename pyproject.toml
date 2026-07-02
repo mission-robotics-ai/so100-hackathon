@@ -71,7 +71,7 @@ dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks.dataset-collector]
 cmd = "python tools/apps/dataset_collector.py"
-description = "Collect SO-100 datasets: host Rerun proxy + OSS web viewer + OSS catalog + control server; tee recordings to disk and register on stop"
+description = "Collect SO-100 datasets: browser start/stop, tee arm recordings to disk + register in a local Rerun catalog (--fake for a synthetic stream)"
 
 [tool.pixi.tasks.log-so100]
 cmd = "python tools/apps/log_so100.py"
