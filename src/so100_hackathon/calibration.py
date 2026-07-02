@@ -103,7 +103,7 @@ def save_calibration(
     ``kind`` ("leader"/"follower") and ``range_min``/``range_max`` (recorded
     range-of-motion sweep, raw ticks) are extra keys that portugal-format readers ignore.
     """
-    payload = {
+    payload: dict[str, object] = {
         "homing_offset": [c.homing_offset for c in calibration],
         "drive_mode": [1 if c.end_pos < c.start_pos else 0 for c in calibration],
         "start_pos": [c.start_pos for c in calibration],

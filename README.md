@@ -59,10 +59,15 @@ The viewer shows two URDF arms: **gray = target pose**, the other (black leader 
 follower) = live view of your arm. Torque is off, so you can move the arm freely by hand.
 
 1. **Middle pose** — move the arm to the middle of its range of motion (match the gray
-   target), press Enter. This pose defines 0° for every joint.
+   target), hold it still, press Enter. This pose defines 0° for every joint. Like
+   lerobot's half-turn homing, the offset is **written to each servo's EEPROM** so the
+   middle reads ~2047 ticks — the 0/4095 tick wrap ends up half a turn away and can never
+   be crossed during normal motion (an arm whose joints happen to sit near the wrap
+   otherwise gets ±360° jumps).
 2. **Range sweep** — move every joint except `wrist_roll` (full-turn joint, auto 0-4095)
    through its full range of motion, including fully closing/opening the gripper (leader:
-   squeeze/release the trigger). A live min/pos/max table shows progress. Press Enter when done.
+   squeeze/release the trigger). A live min/pos/max table shows progress. Press Enter when
+   done. The swept range is also written to the servos' position-limit registers.
 
 Joint directions aren't calibrated per arm — like lerobot, they follow the standard
 assembly convention (flip an entry in `DRIVE_SIGNS` in `apis/calibrate.py` if a
@@ -107,6 +112,7 @@ Safety, since teleop turns the follower's torque ON:
 ```bash
 pixi run -e dev lint
 pixi run -e dev typecheck
+pixi run -e dev deadcode
 ```
 
 Package layout follows the examples-monorepo conventions: Tyro configs + `main()` live in

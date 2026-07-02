@@ -2,10 +2,15 @@
 lerobot procedure (``lerobot-calibrate``):
 
 1. Move the arm to the **middle of its range of motion** pose, press Enter.
-   That pose defines 0 deg for every joint (lerobot's "half-turn homing").
+   That pose defines 0 deg for every joint. Like lerobot's "half-turn homing",
+   the offset is written to each servo's Homing_Offset EEPROM register so the
+   middle reads ~2047 ticks — which pushes the 0/4095 tick wrap half a turn
+   away from the whole usable range (software-only offsets can't prevent an
+   unluckily-assembled joint from wrapping mid-sweep).
 2. Move **every joint through its full range of motion** (including fully
    closing and opening the gripper/trigger); min/max are recorded live.
-   Press Enter when done.
+   Press Enter when done. The swept range is also written to the servos'
+   Min/Max_Position_Limit registers (lerobot parity).
 
 Joint directions are NOT calibrated per-arm: like lerobot, they follow the
 standard assembly convention (raw ticks increasing == URDF-positive rotation).
@@ -73,6 +78,7 @@ class _LiveArmFeed:
         self.latest_raw: list[int] | None = None
         self.reset_ranges()
         self._stop = threading.Event()
+        self._paused = threading.Event()
         self._thread = threading.Thread(target=self._run, name="live-arm", daemon=True)
         self._thread.start()
 
@@ -80,11 +86,27 @@ class _LiveArmFeed:
         self._display_calibration = calibration
         self.urdf = urdf
 
+    def pause(self) -> None:
+        """Stop polling before main-thread register writes; returns once no read is in flight.
+
+        A read that slipped past the flag check still serializes against the writes via the
+        bus lock, and the stale ranges it may record are cleared by reset_ranges() while paused.
+        """
+        self._paused.set()
+        with self.bus.lock:  # wait out any in-flight transaction
+            pass
+
+    def resume(self) -> None:
+        self._paused.clear()
+
     def _run(self) -> None:
         failures = 0
         while not self._stop.is_set():
+            if self._paused.is_set():
+                time.sleep(0.05)
+                continue
             try:
-                telemetry = self.bus.read_telemetry()
+                raw = self.bus.read_positions()
             except RuntimeError as error:
                 failures += 1
                 if failures == 1 or failures % 50 == 0:  # ~every 5s; a hung table should be diagnosable
@@ -92,8 +114,9 @@ class _LiveArmFeed:
                 time.sleep(0.1)
                 continue
             failures = 0
-            raw = [t.position_raw for t in telemetry]
             self.latest_raw = raw
+            if self._paused.is_set():  # a read that slipped past the flag check: skip the ranges
+                continue
             self.range_min = [min(lo, r) for lo, r in zip(self.range_min, raw, strict=True)]
             self.range_max = [max(hi, r) for hi, r in zip(self.range_max, raw, strict=True)]
             urdf, display = self.urdf, self._display_calibration
@@ -102,11 +125,9 @@ class _LiveArmFeed:
                 urdf.log_joints([calib.calibrated_from_raw(r) for calib, r in zip(display, raw, strict=True)])
             time.sleep(1.0 / 20.0)
 
-    def capture(self) -> list[int]:
-        raw = self.latest_raw
-        if raw is None:
+    def require_responding(self) -> None:
+        if self.latest_raw is None:
             raise SystemExit("no positions read from the arm yet — is it powered?")
-        return raw
 
     def reset_ranges(self) -> None:
         self.range_min = [TICKS_PER_REV] * len(DEFAULT_MOTOR_NAMES)
@@ -131,6 +152,45 @@ def _sweep_until_enter(feed: _LiveArmFeed) -> None:
         print(f"\x1b[{n_lines}A", end="")  # move cursor up to overwrite the table
 
 
+def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
+    """lerobot's set_half_turn_homings: write servo-side Homing_Offset so the CURRENT pose
+    (the middle of the range of motion) reads ~2047 on every motor.
+
+    This puts the 0/4095 tick wrap half a revolution away from the middle, so no joint can
+    cross it during the range sweep — software-only offsets can't guarantee that, and an
+    arm whose middle happens to sit near the wrap point gets +-360 deg jumps (seen on real
+    hardware). Returns the re-read (homed) middle positions.
+
+    On any failure the previous offsets are restored (best-effort), so a transient bus
+    flake doesn't leave the servos half-homed with the on-disk calibration silently stale.
+    """
+    half_turn = TICKS_PER_REV // 2 - 1  # 2047
+    previous = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
+    try:
+        for motor_id in bus.motor_ids:
+            bus.write_homing_offset(motor_id, 0)
+        mechanical = bus.read_positions(attempts=5)
+        for motor_id, mech in zip(bus.motor_ids, mechanical, strict=True):
+            bus.write_homing_offset(motor_id, mech - half_turn)
+        homed = bus.read_positions(attempts=5)
+        drifted = [f"{name} reads {p}" for name, p in zip(DEFAULT_MOTOR_NAMES, homed, strict=True) if abs(p - half_turn) > 30]
+        if drifted:  # the arm moved between the two reads, or a write was lost
+            raise RuntimeError(f"homing verification failed (expected ~{half_turn}): {', '.join(drifted)} — hold the arm still and retry")
+        return homed
+    except RuntimeError:
+        try:
+            for motor_id, offset in zip(bus.motor_ids, previous, strict=True):
+                bus.write_homing_offset(motor_id, offset)
+            print("homing failed — previous servo offsets restored, just re-run calibration", flush=True)
+        except RuntimeError:
+            print(
+                "homing failed AND restoring the previous offsets failed — this arm's servo homing is now "
+                "inconsistent and any existing calibration for it is stale; re-run calibration before using it",
+                flush=True,
+            )
+        raise
+
+
 def _pick_arm_by_wiggle(ports: tuple[str, ...]) -> str:
     """Several arms are plugged in: identify one physically instead of by port name."""
     buses = {port: FeetechBus(port) for port in ports}
@@ -140,7 +200,7 @@ def _pick_arm_by_wiggle(ports: tuple[str, ...]) -> str:
         while True:
             for port, bus in buses.items():
                 try:
-                    positions = [t.position_raw for t in bus.read_telemetry()]
+                    positions = bus.read_positions()
                 except RuntimeError:
                     continue
                 if port not in baselines:
@@ -190,8 +250,14 @@ def main(config: CalibrateConfig) -> None:
         rr.set_time("time", timestamp=time.time())
         target.log_pose(list(target.center_angles_rad))
         input("1/2  move the arm to the MIDDLE of its range of motion (match the gray target), then press Enter...")
-        raw_middle = feed.capture()
-        feed.reset_ranges()
+        feed.require_responding()  # make sure the arm is actually answering before touching EEPROM
+        # Half-turn homing (lerobot): written to the servos, so KEEP THE ARM STILL here.
+        feed.pause()
+        bus.set_torque(False)  # clears Lock so the EEPROM writes below land (torque is already off)
+        raw_middle = _write_half_turn_homing(bus)
+        feed.reset_ranges()  # while still paused, so no stale pre-homing tick can leak into the sweep
+        feed.resume()
+        print(f"     homing offsets written to the servos — middle pose now reads {raw_middle}")
 
         # From here the homing is known, so a live model is trustworthy: show it
         # mirroring the real arm (also instantly reveals any mirrored joint).
@@ -210,6 +276,28 @@ def main(config: CalibrateConfig) -> None:
         _sweep_until_enter(feed)
         range_min, range_max = list(feed.range_min), list(feed.range_max)
         range_min[WRIST_ROLL_INDEX], range_max[WRIST_ROLL_INDEX] = 0, TICKS_PER_REV - 1
+        # Validate BEFORE anything is persisted: an early Enter or unmoved joint would
+        # otherwise burn a garbage range (even the 4096/0 reset sentinels) into the servos.
+        unswept = [
+            name
+            for i, name in enumerate(DEFAULT_MOTOR_NAMES)
+            if i != WRIST_ROLL_INDEX and not (0 <= range_min[i] <= range_max[i] < TICKS_PER_REV and range_max[i] - range_min[i] >= MIN_SWEEP_TICKS)
+        ]
+        if unswept:
+            raise SystemExit(
+                f"sweep incomplete for: {', '.join(unswept)} (each joint needs >= {MIN_SWEEP_TICKS} ticks of motion). "
+                "No limits or calibration were written (the homing offsets were) — re-run and sweep every joint fully."
+            )
+        # Servo-side motion limits from the sweep (lerobot parity). Also overwrites stale
+        # limits a previous lerobot calibration may have left, which no longer line up
+        # once the homing offsets above changed.
+        feed.pause()
+        try:
+            for i, motor_id in enumerate(bus.motor_ids):
+                bus.write_position_limits(motor_id, range_min[i], range_max[i])
+        except RuntimeError as error:
+            # The sweep data is good; don't throw away the whole session over a flaky write.
+            print(f"WARNING: writing servo position limits failed ({error}) — saving the calibration anyway; re-run if motion seems restricted", flush=True)
     finally:
         feed.stop()
         bus.close()
@@ -218,8 +306,6 @@ def main(config: CalibrateConfig) -> None:
     for i, name in enumerate(DEFAULT_MOTOR_NAMES):
         span = range_max[i] - range_min[i]
         span_deg = span * 360.0 / TICKS_PER_REV
-        if span < MIN_SWEEP_TICKS and i != WRIST_ROLL_INDEX:
-            print(f"WARNING: {name} only swept {span_deg:.0f} deg — did you move it through its full range?")
         if i == GRIPPER_INDEX:
             # Assembly convention: raw min = closed, raw max = open (0..100%).
             calibration.append(

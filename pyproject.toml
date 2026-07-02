@@ -33,6 +33,7 @@ ruff = "*"
 pytest = ">=8.0.0,<9"
 beartype = ">=0.22.9"
 pyrefly = "*"
+vulture = "*"
 
 [tool.pixi.feature.dev.activation.env]
 PIXI_DEV_MODE = "1"
@@ -44,6 +45,10 @@ description = "Lint the package"
 [tool.pixi.feature.dev.tasks.typecheck]
 cmd = "pyrefly check src tools"
 description = "Typecheck the package"
+
+[tool.pixi.feature.dev.tasks.deadcode]
+cmd = "vulture --config pyproject.toml"
+description = "Find dead code in the package"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
@@ -60,6 +65,16 @@ description = "Guided SO-100 calibration (match target poses shown in the viewer
 [tool.pixi.tasks.teleop-so100]
 cmd = "python tools/apps/log_so100.py --teleop --fps 60"
 description = "Teleoperate: the follower arm mirrors the leader (torque ON), with full logging"
+
+[tool.vulture]
+paths = ["src/so100_hackathon", "tools"]
+exclude = ["*/.pixi/*", "*/__pycache__/*", "*/build/*", "*/dist/*"]
+sort_by_size = true
+min_confidence = 60
+# Framework-used names vulture can't see through: the tyro config field consumed via
+# RerunTyroConfig.__post_init__, MotorTelemetry fields read dynamically via getattr in
+# log_arms.METRICS, and the vendored RerunTyroConfig.rec_stream handle.
+ignore_names = ["rr_config", "rec_stream", "speed_ticks_s", "load_pct", "voltage_v", "temperature_c", "current_ma"]
 
 [tool.ruff]
 line-length = 150
