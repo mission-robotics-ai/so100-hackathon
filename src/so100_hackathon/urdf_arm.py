@@ -84,6 +84,7 @@ class UrdfArm:
         name: str,
         calibration: list[MotorCalibration],
         *,
+        rec: rr.RecordingStream,
         urdf_path: Path = FOLLOWER_URDF_PATH,
         translation: tuple[float, float, float] = (0.0, 0.0, 0.0),
         center_angles_deg: tuple[float, ...] | None = None,
@@ -107,26 +108,26 @@ class UrdfArm:
             color=color,
             translation=translation,
         )
-        arm.log_static()
+        arm.log_static(rec)
         return arm
 
-    def log_static(self) -> None:
-        """(Re-)log the URDF's static geometry into the current recording.
+    def log_static(self, rec: rr.RecordingStream) -> None:
+        """(Re-)log the URDF's static geometry into ``rec``.
 
         The meshes are static data keyed by recording id, so this must run once per
         recording (e.g. the dataset collector re-logs it for every take)."""
-        self.tree.log_urdf_to_recording()
+        self.tree.log_urdf_to_recording(rec)
         if self.color is not None:
             # Tint every visual mesh, overriding the URDF's material colors.
             links = [self.tree.root_link()] + [self.tree.get_joint_child(joint) for joint in self.tree.joints()]
             for link in links:
                 for visual_path in self.tree.get_visual_geometry_paths(link):
-                    rr.log(visual_path, rr.Asset3D.from_fields(albedo_factor=[*self.color, 1.0]), static=True)
+                    rec.log(visual_path, rr.Asset3D.from_fields(albedo_factor=[*self.color, 1.0]), static=True)
         # The URDF's frames form an island: anchor its root frame to the entity tree
         # (parent_frame defaults to the implicit root frame here), or nothing renders.
         root_frame = f"{self.name}/{self.tree.root_link().name}"
         rpy, offset = MODEL_CORRECTIONS[self.urdf_path.name]
-        rr.log(
+        rec.log(
             self.name,
             rr.Transform3D(
                 translation=tuple(t + o for t, o in zip(self.translation, offset, strict=True)),
@@ -147,13 +148,13 @@ class UrdfArm:
         # angle, which floods stdout on uncalibrated arms.
         return min(max(angle, joint.limit_lower), joint.limit_upper)
 
-    def log_joints(self, calibrated_values: list[float]) -> None:
+    def log_joints(self, rec: rr.RecordingStream, calibrated_values: list[float]) -> None:
         for joint in self.joints:
             joint_index = int(joint.name) - 1
             angle = self.joint_angle_rad(joint_index, calibrated_values[joint_index])
-            rr.log(f"{self.name}/joint_transforms", joint.compute_transform(angle))
+            rec.log(f"{self.name}/joint_transforms", joint.compute_transform(angle))
 
-    def log_pose(self, angles_rad: list[float]) -> None:
+    def log_pose(self, rec: rr.RecordingStream, angles_rad: list[float]) -> None:
         """Log explicit joint angles (rad), e.g. a calibration target pose."""
         for joint, angle in zip(self.joints, angles_rad, strict=True):
-            rr.log(f"{self.name}/joint_transforms", joint.compute_transform(angle, clamp=True))
+            rec.log(f"{self.name}/joint_transforms", joint.compute_transform(angle, clamp=True))

@@ -1,8 +1,9 @@
 """Tyro-facing Rerun viewer/save/connect config, vendored from simplecv.rerun_log_utils.
 
 Add it as a nested dataclass field (``rr_config: RerunTyroConfig``); its
-``__post_init__`` wires up spawn/connect/save/serve/headless behavior so the
-tool can use plain global ``rr.*`` logging calls afterwards.
+``__post_init__`` creates a ``RecordingStream`` (``self.rec``) and wires up its
+spawn/connect/save/serve/headless behavior. Pass ``config.rr_config.rec`` to the
+logging code so it uses explicit ``rec.*`` calls instead of the global recording.
 """
 
 from __future__ import annotations
@@ -56,19 +57,18 @@ class RerunTyroConfig:
     """Optional absolute or relative path to the Rerun executable."""
 
     def __post_init__(self):
-        rr.init(
+        rr.set_strict_mode(True)
+        self.rec: rr.RecordingStream = rr.RecordingStream(
             application_id=self.application_id,
             recording_id=self.recording_id,
             default_enabled=True,
-            strict=True,
         )
-        self.rec_stream: rr.RecordingStream = rr.get_global_data_recording()  # type: ignore[assignment]
 
         if self.serve:
-            rr.serve_grpc()
-            rr.serve_web_viewer(open_browser=not self.headless)
+            server_uri = self.rec.serve_grpc()
+            rr.serve_web_viewer(open_browser=not self.headless, connect_to=server_uri)
         elif self.connect:
-            rr.connect_grpc(url=self.connect_url)
+            self.rec.connect_grpc(url=self.connect_url)
         elif self.save is not None and self.live and not self.headless:
             # Stream to a spawned viewer AND save to a .rrd at the same time by
             # fanning out through explicit sinks. ``spawn``/``save`` each install a
@@ -79,18 +79,20 @@ class RerunTyroConfig:
                 connect=False,
                 executable_name=self.executable_name,
                 executable_path=self.executable_path,
+                recording=self.rec,
             )
-            rr.set_sinks(
+            self.rec.set_sinks(
                 rr.GrpcSink(f"rerun+http://127.0.0.1:{self.port}/proxy"),
                 rr.FileSink(str(self.save)),
             )
         elif self.save is not None:
-            rr.save(self.save)
+            self.rec.save(self.save)
         elif not self.headless:
             rr.spawn(
                 port=self.port,
                 executable_name=self.executable_name,
                 executable_path=self.executable_path,
+                recording=self.rec,
             )
 
 

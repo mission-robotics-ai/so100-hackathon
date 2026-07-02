@@ -110,7 +110,7 @@ class LogArmsConfig:
     (degrees; % for the gripper). Default: no clamp, like lerobot."""
 
 
-def _open_arms(config: LogArmsConfig) -> list[Arm]:
+def _open_arms(config: LogArmsConfig, rec: rr.RecordingStream) -> list[Arm]:
     ports = config.ports or detect_arm_ports()
     if not ports:
         raise SystemExit("no SO-100 arms found (no /dev/cu.usbmodem* ports); pass --ports explicitly")
@@ -170,6 +170,7 @@ def _open_arms(config: LogArmsConfig) -> list[Arm]:
             urdf = UrdfArm.create(
                 res.name,
                 res.calibration,
+                rec=rec,
                 urdf_path=LEADER_URDF_PATH if res.is_leader else FOLLOWER_URDF_PATH,
                 translation=(0.0, -i * config.arm_spacing, 0.0),
                 center_angles_deg=config.joint_offsets_deg,
@@ -189,18 +190,18 @@ def _open_arms(config: LogArmsConfig) -> list[Arm]:
     return arms
 
 
-def _log_arm(arm: Arm) -> None:
+def _log_arm(arm: Arm, rec: rr.RecordingStream) -> None:
     telemetry: list[MotorTelemetry] = arm.bus.read_telemetry()
     calibrated = [calib.calibrated_from_raw(t.position_raw) for calib, t in zip(arm.calibration, telemetry, strict=True)]
     arm.last_calibrated = calibrated
-    rr.log(f"{arm.name}/position", rr.Scalars(calibrated))
+    rec.log(f"{arm.name}/position", rr.Scalars(calibrated))
     for subpath, attr in METRICS.items():
-        rr.log(f"{arm.name}/{subpath}", rr.Scalars([float(getattr(t, attr)) for t in telemetry]))
+        rec.log(f"{arm.name}/{subpath}", rr.Scalars([float(getattr(t, attr)) for t in telemetry]))
     if arm.urdf is not None:
-        arm.urdf.log_joints(calibrated)
+        arm.urdf.log_joints(rec, calibrated)
 
 
-def _drive_follower(leader: Arm, follower: Arm, *, blend: float, max_step: float | None) -> None:
+def _drive_follower(leader: Arm, follower: Arm, *, rec: rr.RecordingStream, blend: float, max_step: float | None) -> None:
     """Mirror the leader: leader calibrated values -> follower raw ticks -> Goal_Position.
 
     ``blend`` < 1 eases the follower from its own pose toward the leader's (startup ramp);
@@ -220,7 +221,7 @@ def _drive_follower(leader: Arm, follower: Arm, *, blend: float, max_step: float
         goals.append(raw)
         goals_calibrated.append(calib.calibrated_from_raw(raw))
     follower.bus.sync_write_goal(goals)
-    rr.log(f"{follower.name}/goal", rr.Scalars(goals_calibrated))
+    rec.log(f"{follower.name}/goal", rr.Scalars(goals_calibrated))
 
 
 class ArmSession:
@@ -229,21 +230,22 @@ class ArmSession:
     Unlike ``main`` (which owns the viewer and its own loop), this opens the hardware once
     and, on :meth:`start`, runs its own background loop that reads every arm, optionally
     drives the follower to mirror the leader (teleop), and logs a frame -- continuously, into
-    whatever recording is the current default. The collector swaps the default recording (and
-    its sinks) to start/stop recording *takes* without interrupting teleop or the live view.
+    :attr:`rec`. :meth:`begin` swaps :attr:`rec` (and the sinks are swapped alongside), which
+    is how the collector starts/stops *takes* without interrupting teleop or the live view.
 
     * :meth:`start` — arm the follower (if teleop) and start the camera + logging threads.
       Call once a log sink is attached.
-    * :meth:`begin` — (re-)log the static per-motor series, URDF meshes, and blueprint into
-      the now-current recording; the collector calls this for each new take.
+    * :meth:`begin` — redirect the session (and its cameras) to ``rec``, then (re-)log the
+      static per-motor series, URDF meshes, and blueprint into it; called for each new take.
     * :meth:`close` — stop the threads, release the follower's torque, close the buses.
     """
 
-    def __init__(self, config: LogArmsConfig) -> None:
+    def __init__(self, config: LogArmsConfig, rec: rr.RecordingStream) -> None:
         self.config = config
-        self.arms = _open_arms(config)
+        self.rec = rec
+        self.arms = _open_arms(config, rec)
         camera_indices = detect_camera_indices() if config.cameras is None else config.cameras
-        self.streamers = [CameraStreamer(index, jpeg_quality=config.jpeg_quality) for index in camera_indices]
+        self.streamers = [CameraStreamer(index, rec=rec, jpeg_quality=config.jpeg_quality) for index in camera_indices]
         self._reconnect_every = max(1, int(config.fps))  # attempt a reconnect roughly once a second
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -256,7 +258,14 @@ class ArmSession:
         if config.teleop:
             leader = next((arm for arm in self.arms if arm.is_leader), None)
             follower = next((arm for arm in self.arms if not arm.is_leader), None)
-            if len(self.arms) == 2 and leader is not None and follower is not None and leader.calibrated and follower.calibrated and follower.ranges is not None:
+            if (
+                len(self.arms) == 2
+                and leader is not None
+                and follower is not None
+                and leader.calibrated
+                and follower.calibrated
+                and follower.ranges is not None
+            ):
                 self._leader, self._follower = leader, follower
             else:
                 print("teleop requested but needs two calibrated arms (with a follower range) — running WITHOUT teleop", flush=True)
@@ -282,17 +291,21 @@ class ArmSession:
         self._thread = threading.Thread(target=self._run, name="arm-session", daemon=True)
         self._thread.start()
 
-    def begin(self) -> None:
+    def begin(self, rec: rr.RecordingStream) -> None:
+        # Redirect this session's loop and its camera threads into rec (they snapshot it per frame).
+        self.rec = rec
+        for streamer in self.streamers:
+            streamer.rec = rec
         for arm in self.arms:
             motor_names = [calib.motor_name for calib in arm.calibration]
             for subpath in METRIC_SUBPATHS:
-                rr.log(f"{arm.name}/{subpath}", rr.SeriesLines(names=motor_names), static=True)
+                rec.log(f"{arm.name}/{subpath}", rr.SeriesLines(names=motor_names), static=True)
             if arm.urdf is not None:
-                arm.urdf.log_static()  # re-log the meshes into this take's recording
+                arm.urdf.log_static(rec)  # re-log the meshes into this take's recording
         if self._follower is not None:
             goal_names = [f"{calib.motor_name} goal" for calib in self._follower.calibration]
-            rr.log(f"{self._follower.name}/goal", rr.SeriesLines(names=goal_names), static=True)
-        rr.send_blueprint(
+            rec.log(f"{self._follower.name}/goal", rr.SeriesLines(names=goal_names), static=True)
+        rec.send_blueprint(
             create_blueprint(
                 [arm.name for arm in self.arms],
                 camera_paths=[streamer.entity_path for streamer in self.streamers],
@@ -307,12 +320,13 @@ class ArmSession:
         frame_time = 1.0 / self.config.fps
         while not self._stop.is_set():
             loop_start = time.monotonic()
-            rr.set_time("time", timestamp=time.time())
+            rec = self.rec  # snapshot: the collector may swap it between frames
+            rec.set_time("time", timestamp=time.time())
             for arm in self.arms:
                 # Tolerate transient bus glitches per arm, so one unplugged arm never stalls the others.
                 try:
                     recovering = arm.errors > 0
-                    _log_arm(arm)
+                    _log_arm(arm, rec)
                     arm.errors = 0
                     if recovering and arm is self._follower:
                         # A servo power blip resets Torque_Enable, and goal writes are
@@ -336,7 +350,7 @@ class ArmSession:
                         self._teleop_t0 = loop_start
                     blend = min(1.0, (loop_start - self._teleop_t0) / TELEOP_RAMP_SECONDS)
                     try:
-                        _drive_follower(self._leader, self._follower, blend=blend, max_step=self.config.max_relative_target)
+                        _drive_follower(self._leader, self._follower, rec=rec, blend=blend, max_step=self.config.max_relative_target)
                         self._write_errors = 0
                     except RuntimeError as error:
                         self._write_errors += 1
@@ -366,13 +380,14 @@ class ArmSession:
 
 
 def main(config: LogArmsConfig) -> None:
-    arms = _open_arms(config)
+    rec = config.rr_config.rec
+    arms = _open_arms(config, rec)
 
     # Name the per-motor series once, statically, so plot legends show joint names.
     for arm in arms:
         motor_names = [calib.motor_name for calib in arm.calibration]
         for subpath in METRIC_SUBPATHS:
-            rr.log(f"{arm.name}/{subpath}", rr.SeriesLines(names=motor_names), static=True)
+            rec.log(f"{arm.name}/{subpath}", rr.SeriesLines(names=motor_names), static=True)
 
     leader_arm: Arm | None = None
     follower_arm: Arm | None = None
@@ -389,14 +404,14 @@ def main(config: LogArmsConfig) -> None:
                 "has no range_min/range_max — re-run: pixi run calibrate-so100 follower"
             )
         goal_names = [f"{calib.motor_name} goal" for calib in follower_arm.calibration]
-        rr.log(f"{follower_arm.name}/goal", rr.SeriesLines(names=goal_names), static=True)
+        rec.log(f"{follower_arm.name}/goal", rr.SeriesLines(names=goal_names), static=True)
 
     camera_indices = detect_camera_indices() if config.cameras is None else config.cameras
-    streamers = [CameraStreamer(index, jpeg_quality=config.jpeg_quality) for index in camera_indices]
+    streamers = [CameraStreamer(index, rec=rec, jpeg_quality=config.jpeg_quality) for index in camera_indices]
     for streamer in streamers:
         streamer.start()
 
-    rr.send_blueprint(
+    rec.send_blueprint(
         create_blueprint(
             [arm.name for arm in arms],
             camera_paths=[streamer.entity_path for streamer in streamers],
@@ -426,13 +441,13 @@ def main(config: LogArmsConfig) -> None:
             print(f"teleop: {follower_arm.name} torque ON, mirroring {leader_arm.name} — Ctrl-C releases it", flush=True)
         while True:
             loop_start = time.monotonic()
-            rr.set_time("time", timestamp=time.time())
+            rec.set_time("time", timestamp=time.time())
             for arm in arms:
                 # Tolerate transient bus glitches (bad packets, USB drops) per arm, so one
                 # unplugged arm never stalls the others; frame pacing spaces the retries.
                 try:
                     recovering = arm.errors > 0
-                    _log_arm(arm)
+                    _log_arm(arm, rec)
                     arm.errors = 0
                     if recovering and arm is follower_arm:
                         # A servo power blip resets Torque_Enable, and goal writes are
@@ -460,7 +475,7 @@ def main(config: LogArmsConfig) -> None:
                         teleop_t0 = loop_start
                     blend = min(1.0, (loop_start - teleop_t0) / TELEOP_RAMP_SECONDS)
                     try:
-                        _drive_follower(leader_arm, follower_arm, blend=blend, max_step=config.max_relative_target)
+                        _drive_follower(leader_arm, follower_arm, rec=rec, blend=blend, max_step=config.max_relative_target)
                         write_errors = 0
                     except RuntimeError as error:
                         write_errors += 1

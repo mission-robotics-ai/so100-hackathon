@@ -71,8 +71,9 @@ class _LiveArmFeed:
     there is no valid raw->angle mapping and a mismatched model just confuses.
     """
 
-    def __init__(self, bus: FeetechBus) -> None:
+    def __init__(self, bus: FeetechBus, rec: rr.RecordingStream) -> None:
         self.bus = bus
+        self.rec = rec
         self.urdf: UrdfArm | None = None
         self._display_calibration: list[MotorCalibration] | None = None
         self.latest_raw: list[int] | None = None
@@ -121,8 +122,8 @@ class _LiveArmFeed:
             self.range_max = [max(hi, r) for hi, r in zip(self.range_max, raw, strict=True)]
             urdf, display = self.urdf, self._display_calibration
             if urdf is not None and display is not None:
-                rr.set_time("time", timestamp=time.time())
-                urdf.log_joints([calib.calibrated_from_raw(r) for calib, r in zip(display, raw, strict=True)])
+                self.rec.set_time("time", timestamp=time.time())
+                urdf.log_joints(self.rec, [calib.calibrated_from_raw(r) for calib, r in zip(display, raw, strict=True)])
             time.sleep(1.0 / 20.0)
 
     def require_responding(self) -> None:
@@ -222,12 +223,13 @@ def main(config: CalibrateConfig) -> None:
     usb_id = usb_id_from_port(port)
     out_path = config.calibration_dir / f"{usb_id}.json"
 
+    rec = config.rr_config.rec
     is_leader = config.kind == "leader"
     urdf_path = LEADER_URDF_PATH if is_leader else FOLLOWER_URDF_PATH
-    target = UrdfArm.create("target", fallback_calibration(), urdf_path=urdf_path, translation=(0.0, 0.0, 0.0), color=(0.5, 0.5, 0.5))
+    target = UrdfArm.create("target", fallback_calibration(), rec=rec, urdf_path=urdf_path, translation=(0.0, 0.0, 0.0), color=(0.5, 0.5, 0.5))
 
     def send_view(*arms: UrdfArm) -> None:
-        rr.send_blueprint(
+        rec.send_blueprint(
             rrb.Blueprint(
                 rrb.Spatial3DView(
                     name="calibration",
@@ -241,14 +243,14 @@ def main(config: CalibrateConfig) -> None:
 
     send_view(target)
     bus = FeetechBus(port)
-    feed = _LiveArmFeed(bus)
+    feed = _LiveArmFeed(bus, rec)
     half_rev = TICKS_PER_REV // 2  # ticks per 180 deg, so calibrated values come out in degrees
 
     print(f"\ncalibrating {config.kind} {usb_id} on {port} -> {out_path}")
     print("in the viewer: GRAY arm = the target pose to match (a live model appears after step 1)\n")
     try:
-        rr.set_time("time", timestamp=time.time())
-        target.log_pose(list(target.center_angles_rad))
+        rec.set_time("time", timestamp=time.time())
+        target.log_pose(rec, list(target.center_angles_rad))
         input("1/2  move the arm to the MIDDLE of its range of motion (match the gray target), then press Enter...")
         feed.require_responding()  # make sure the arm is actually answering before touching EEPROM
         # Half-turn homing (lerobot): written to the servos, so KEEP THE ARM STILL here.
@@ -267,7 +269,7 @@ def main(config: CalibrateConfig) -> None:
             )
             for i, name in enumerate(DEFAULT_MOTOR_NAMES)
         ]
-        live = UrdfArm.create("live", display, urdf_path=urdf_path, translation=(0.0, -0.4, 0.0), color=MATTE_BLACK)
+        live = UrdfArm.create("live", display, rec=rec, urdf_path=urdf_path, translation=(0.0, -0.4, 0.0), color=MATTE_BLACK)
         feed.attach_urdf(live, display)
         send_view(target, live)
         print("     middle pose captured — the black model now mirrors your arm live")

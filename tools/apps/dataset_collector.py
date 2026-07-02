@@ -17,7 +17,7 @@ from the control server, so everything is same-origin and offline-friendly). The
 The recorded data is the real SO-100 arms + cameras (see ``apis/log_arms.py``), or just
 the connected camera(s) with ``--fake`` (no arms).
 
-While recording, data is *teed* (``rr.set_sinks``) to two sinks at once:
+While recording, data is *teed* (``rec.set_sinks``) to two sinks at once:
 
 * a ``GrpcSink`` pointing at the proxy server (so the viewer shows it live), and
 * a ``FileSink`` writing an ``.rrd`` file into ``recordings/`` (repo root).
@@ -129,21 +129,23 @@ class CameraSource:
     """The ``--fake`` source: just the connected camera(s), no arms.
 
     Same always-on interface as :class:`~so100_hackathon.apis.log_arms.ArmSession`. Each
-    ``CameraStreamer`` runs its own thread and logs into whatever recording is the current
-    default, so recording takes just tees those frames to disk.
+    ``CameraStreamer`` runs its own thread and logs into the current recording (:meth:`begin`
+    redirects them to a take's recording), so recording takes just tees those frames to disk.
     """
 
-    def __init__(self, jpeg_quality: int = 75) -> None:
-        indices = detect_camera_indices()
-        self.streamers = [CameraStreamer(index, jpeg_quality=jpeg_quality) for index in indices]
+    def __init__(self, rec: rr.RecordingStream, jpeg_quality: int = 75) -> None:
+        indices = detect_camera_indices(include_builtin=True)
+        self.streamers = [CameraStreamer(index, rec=rec, jpeg_quality=jpeg_quality) for index in indices]
         print(f"data source:        {len(self.streamers)} camera(s) (--fake, no arms)", flush=True)
 
     def start(self) -> None:
         for streamer in self.streamers:
             streamer.start()
 
-    def begin(self) -> None:
-        pass
+    def begin(self, rec: rr.RecordingStream) -> None:
+        # Redirect the camera threads into rec (they snapshot it per frame).
+        for streamer in self.streamers:
+            streamer.rec = rec
 
     def close(self) -> None:
         for streamer in self.streamers:
@@ -151,9 +153,9 @@ class CameraSource:
 
 
 class Recorder:
-    """Controls recording *takes*: the source streams continuously; start/stop just swaps
-    the default recording's sinks between proxy-only (live) and proxy+file (recording),
-    then optimizes + registers the file on stop.
+    """Controls recording *takes*: the source streams continuously; start creates a fresh
+    recording (redirecting the source to it) teed to proxy+file, stop drops the file sink
+    back to proxy-only, then optimizes + registers the file.
     """
 
     def __init__(self, proxy_uri: str, catalog_uri: str, recordings_dir: Path, source: CameraSource | ArmSession) -> None:
@@ -189,16 +191,16 @@ class Recorder:
 
             # A fresh recording id per take, so each file is a distinct catalog segment.
             # Low-latency batcher so the live view keeps up while we also write to disk.
-            # The always-on source thread starts logging into this recording immediately.
             self._rec = rr.RecordingStream(
                 APP_ID,
                 recording_id=rec_id,
-                make_default=True,
                 batcher_config=rr.ChunkBatcherConfig.LOW_LATENCY(),
             )
             # Tee: everything logged now goes to BOTH the proxy and the file.
-            rr.set_sinks(rr.GrpcSink(url=self._proxy_uri), rr.FileSink(str(path)))
-            self._source.begin()  # (re-)log static series + URDF + blueprint into this take
+            self._rec.set_sinks(rr.GrpcSink(url=self._proxy_uri), rr.FileSink(str(path)))
+            # Redirect the always-on source into this take's recording and (re-)log the
+            # static series + URDF + blueprint into it.
+            self._source.begin(self._rec)
 
             self._recording = True
             self._last = {"file": str(path), "status": "recording"}
@@ -211,9 +213,10 @@ class Recorder:
                 return self.state()
             self._recording = False
             path = self._current_file
+            assert self._rec is not None  # set by start() before _recording flips true
 
         # Drop the FileSink (flushes the footer) but keep streaming to the proxy.
-        rr.set_sinks(rr.GrpcSink(url=self._proxy_uri))
+        self._rec.set_sinks(rr.GrpcSink(url=self._proxy_uri))
         print(f"[recording] stopped -> {path}", flush=True)
 
         summary: dict[str, object] = {"file": str(path) if path else None, "status": "stopped"}
@@ -447,7 +450,9 @@ def make_handler(
 
 
 def main(config: Config) -> None:
-    rr.init(APP_ID)
+    # The live-preview recording, used until the first take. Recorder.start() swaps in a
+    # fresh per-take recording (and redirects the source to it) on "start".
+    rec = rr.RecordingStream(APP_ID)
 
     # Web-viewer assets (served same-origin from the control server, see below).
     assets = ensure_web_viewer_assets(WEB_VIEWER_VERSION)
@@ -486,17 +491,17 @@ def main(config: Config) -> None:
 
         # Stream to the proxy before the first recording, so the viewer shows a live preview
         # (and static data logged when the source opens goes to a real sink, not a dropped buffer).
-        rr.set_sinks(rr.GrpcSink(url=proxy_uri))
+        rec.set_sinks(rr.GrpcSink(url=proxy_uri))
 
         # The data source: just the camera(s) (--fake), or the real SO-100 arms + cameras
         # (with the follower mirroring the leader via teleop, unless --no-teleop).
         if config.fake:
-            source = CameraSource()
+            source = CameraSource(rec)
         else:
-            source = ArmSession(LogArmsConfig(fps=config.fps, teleop=config.teleop, rr_config=_NoViewerConfig()))
+            source = ArmSession(LogArmsConfig(fps=config.fps, teleop=config.teleop, rr_config=_NoViewerConfig()), rec)
             print("data source:        real SO-100 arms", flush=True)
         source.start()  # start the always-on source thread (and arm teleop) now that a sink exists
-        source.begin()  # blueprint + static geometry for the live preview (before any take)
+        source.begin(rec)  # blueprint + static geometry for the live preview (before any take)
 
         # 3) Control server -- serves the page, the web-viewer assets, and the start/stop API.
         #    The viewer's `index.js` dynamically imports `./re_viewer` (extensionless) and

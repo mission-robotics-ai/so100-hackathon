@@ -43,9 +43,10 @@ def _cameras_in_opencv_order() -> list[tuple[str, bool]] | None:
     return cameras
 
 
-def detect_camera_indices(max_index: int = 4) -> tuple[int, ...]:
+def detect_camera_indices(max_index: int = 4, *, include_builtin: bool = False) -> tuple[int, ...]:
     """Probe AVFoundation indices and return the ones that deliver frames, skipping the
-    Mac's built-in webcam. Pass ``--cameras`` explicitly to override any of this."""
+    Mac's built-in webcam. Pass ``include_builtin=True`` (or ``--cameras`` explicitly) to
+    keep it."""
     found: list[int] = []
     for index in range(max_index + 1):
         cap = cv2.VideoCapture(index)
@@ -55,7 +56,7 @@ def detect_camera_indices(max_index: int = 4) -> tuple[int, ...]:
             found.append(index)
 
     cameras = _cameras_in_opencv_order()
-    if cameras is None:
+    if cameras is None or include_builtin:
         return tuple(found)
     kept: list[int] = []
     for index in found:
@@ -70,8 +71,10 @@ def detect_camera_indices(max_index: int = 4) -> tuple[int, ...]:
 class CameraStreamer:
     """Capture one camera on a daemon thread and log frames under ``camera/cam<index>``."""
 
-    def __init__(self, index: int, *, timeline: str = "time", jpeg_quality: int = 75) -> None:
+    def __init__(self, index: int, *, rec: rr.RecordingStream, timeline: str = "time", jpeg_quality: int = 75) -> None:
         self.index = index
+        self.rec = rec
+        """Recording to log into; reassign to redirect this thread's frames (the collector swaps takes)."""
         self.timeline = timeline
         self.jpeg_quality = jpeg_quality
         self.entity_path = f"camera/cam{index}"
@@ -98,10 +101,11 @@ class CameraStreamer:
                 if not ok:
                     time.sleep(0.1)
                     continue
+                rec = self.rec  # snapshot: the collector may swap it between frames
                 # set_time is thread-local, so this timeline value only affects this thread's logs.
-                rr.set_time(self.timeline, timestamp=time.time())
+                rec.set_time(self.timeline, timestamp=time.time())
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                rr.log(self.entity_path, rr.Image(frame_rgb).compress(jpeg_quality=self.jpeg_quality))
+                rec.log(self.entity_path, rr.Image(frame_rgb).compress(jpeg_quality=self.jpeg_quality))
         except Exception as error:  # a crashed feed must be visible, not a silent thread death
             print(f"camera {self.index}: streaming stopped: {error}", flush=True)
         finally:
