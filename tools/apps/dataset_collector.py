@@ -58,6 +58,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # TODO(calude): make these into command line args
 APP_ID = "so-100"
 DATASET_NAME = "recordings"
+FLUSH_TICK_SECS = 0.01  # micro-batcher flush interval (10 ms)
 
 
 @dataclasses.dataclass
@@ -95,6 +96,7 @@ class Recorder:
         self._lock = threading.Lock()
         self._counter = 0
         self._current_file: Path | None = None
+        self._rec: rr.RecordingStream | None = None  # current recording stream
         self._last: dict[str, object] = {}  # summary of the most recent recording
         self._catalog = None  # lazily created rr.catalog.CatalogClient
 
@@ -118,7 +120,13 @@ class Recorder:
             self._current_file = path
 
             # A fresh recording id per take, so each file is a distinct catalog segment.
-            rr.init(APP_ID, recording_id=rec_id)
+            # A 10 ms micro-batcher flush keeps the live view low-latency.
+            self._rec = rr.RecordingStream(
+                APP_ID,
+                recording_id=rec_id,
+                make_default=True,
+                batcher_config=rr.ChunkBatcherConfig(flush_tick=FLUSH_TICK_SECS),
+            )
 
             # Tee: everything logged now goes to BOTH the proxy and the file.
             rr.set_sinks(rr.GrpcSink(url=self._proxy_uri), rr.FileSink(str(path)))
@@ -148,6 +156,7 @@ class Recorder:
         summary: dict[str, object] = {"file": str(path) if path else None, "status": "stopped"}
         if path is not None:
             try:
+                self._optimize(path)
                 summary["registration"] = self._register(path)
                 summary["status"] = "registered"
                 segments = summary["registration"].get("segment_ids")  # type: ignore[union-attr]
@@ -160,6 +169,20 @@ class Recorder:
         with self._lock:
             self._last = summary
         return self.state()
+
+    def _optimize(self, path: Path) -> None:
+        """Compact the recording's chunks in place via `rerun rrd optimize`."""
+        tmp = path.with_name(path.name + ".tmp")
+        proc = subprocess.run(
+            [sys.executable, "-m", "rerun", "rrd", "optimize", str(path), "-o", str(tmp)],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(f"rerun rrd optimize failed: {proc.stderr.strip()}")
+        os.replace(tmp, path)
+        print(f"[optimize]  compacted {path}", flush=True)
 
     def _register(self, path: Path) -> dict[str, object]:
         if self._catalog is None:
@@ -372,6 +395,7 @@ def main(config: Config) -> None:
     httpd = ThreadingHTTPServer(("localhost", config.control_port), make_handler(recorder, page))
     page_url = f"http://localhost:{config.control_port}"
     print(f"Control server:     {page_url}  (open this)")
+    print()
 
     if config.open_browser:
         import webbrowser
