@@ -1,30 +1,27 @@
-"""Host a Rerun proxy, an OSS web viewer, an OSS catalog server, and a control server.
+"""SO-100 dataset collector: record takes to disk and register them in a local Rerun catalog.
 
-Four servers are started:
+Three servers are started:
 
-* ``--grpc-port``    (default 9876):  a Rerun gRPC *proxy* server (``rr.serve_grpc``)
-  -- the live data source the viewer streams from.
-* ``--viewer-port``  (default 9090):  the OSS Rerun web-viewer assets
-  (``rr.start_web_viewer_server``) -- i.e. the viewer HTML/wasm hosted locally
-  instead of from ``app.rerun.io``.
+* ``--grpc-port``    (default 9876):  a Rerun gRPC *proxy* server (``rr.serve_grpc``,
+  in its own process) -- the live data source the viewer streams from.
 * ``--catalog-port`` (default 51234): the OSS catalog server (``rerun server``) --
   recordings written to disk get registered here on "stop".
-* ``--control-port`` (default 8000):  a small stdlib HTTP "control server" that
-  serves the combined HTML page and handles the ``start`` / ``stop`` buttons.
+* ``--control-port`` (default 8000):  a stdlib HTTP "control server" that serves the
+  page, the ``@rerun-io/web-viewer`` assets, and the ``start`` / ``stop`` API.
 
-The combined HTML page (served by the control server at ``/``) embeds the OSS
-web viewer in an iframe -- loaded from the local OSS server and connected to the
-local proxy server (live) and the local catalog server (browse registered
-recordings) -- in the top 80%, with a "start" / "stop" control bar in the
-bottom 20%.
+The page (served at ``/``) bootstraps the Rerun web viewer itself using the
+``@rerun-io/web-viewer`` npm package (fetched once into a gitignored cache and served
+from the control server, so everything is same-origin and offline-friendly). The top
+80% is the viewer, the bottom 20% is a "start" / "stop" control bar.
 
 While recording, data is *teed* (``rr.set_sinks``) to two sinks at once:
 
 * a ``GrpcSink`` pointing at the proxy server (so the viewer shows it live), and
 * a ``FileSink`` writing an ``.rrd`` file into ``recordings/`` (repo root).
 
-On "stop", the file sink is closed (footer flushed) and the ``.rrd`` file is
-registered to the OSS catalog server.
+On "stop", the file sink is closed (footer flushed), the ``.rrd`` is compacted with
+``rerun rrd optimize``, then registered to the OSS catalog server -- and the running
+viewer is told to ``open()`` the freshly registered recording (no reload).
 
 Run it with::
 
@@ -36,13 +33,17 @@ then open http://localhost:8000
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -60,28 +61,32 @@ APP_ID = "so-100"
 DATASET_NAME = "recordings"
 FLUSH_TICK_SECS = 0.01  # micro-batcher flush interval (10 ms)
 
+# The web-viewer npm package is fetched once and served by the control server. Its
+# version must match the installed rerun-sdk (the wasm-bindgen glue is build-specific).
+WEB_VIEWER_VERSION = rr.__version__
+WEB_VIEWER_FILES = ("index.js", "re_viewer.js", "re_viewer_bg.wasm")
+NPM_TARBALL = "https://registry.npmjs.org/@rerun-io/web-viewer/-/web-viewer-{version}.tgz"
 
-@dataclasses.dataclass
-class Config:
-    """Ports and paths for the servers."""
 
-    grpc_port: int = 9876
-    """Port for the Rerun gRPC proxy server."""
+def ensure_web_viewer_assets(version: str) -> dict[str, Path]:
+    """Fetch the ``@rerun-io/web-viewer`` assets into a gitignored cache, return their paths."""
+    cache = REPO_ROOT / ".web-viewer" / version
+    targets = {name: cache / name for name in WEB_VIEWER_FILES}
+    if all(path.exists() for path in targets.values()):
+        return targets
 
-    viewer_port: int = 9090
-    """Port for the OSS Rerun web-viewer assets."""
-
-    catalog_port: int = 51234
-    """Port for the OSS catalog server (``rerun server``)."""
-
-    control_port: int = 8000
-    """Port for the custom control server (also serves the HTML page)."""
-
-    recordings_dir: Path = REPO_ROOT / "recordings"
-    """Folder the ``.rrd`` files are written to (default: ``recordings/`` at repo root)."""
-
-    open_browser: bool = True
-    """Open the combined page in the default browser on startup."""
+    cache.mkdir(parents=True, exist_ok=True)
+    url = NPM_TARBALL.format(version=version)
+    print(f"Fetching @rerun-io/web-viewer@{version} ...", flush=True)
+    with urllib.request.urlopen(url) as resp:  # noqa: S310 - trusted npm registry URL
+        data = resp.read()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        for name, dest in targets.items():
+            member = tar.extractfile(f"package/{name}")
+            if member is None:
+                raise RuntimeError(f"web-viewer tarball is missing package/{name}")
+            dest.write_bytes(member.read())
+    return targets
 
 
 class Recorder:
@@ -159,8 +164,12 @@ class Recorder:
                 self._optimize(path)
                 summary["registration"] = self._register(path)
                 summary["status"] = "registered"
-                segments = summary["registration"].get("segment_ids")  # type: ignore[union-attr]
-                print(f"[catalog]   registered {path} in dataset '{DATASET_NAME}' (segments: {segments})", flush=True)
+                registration = summary["registration"]
+                print(
+                    f"[catalog]   registered {path} in dataset '{DATASET_NAME}' "
+                    f"(segments: {registration['segment_ids']})",  # type: ignore[index]
+                    flush=True,
+                )
             except Exception as err:  # noqa: BLE001 - surface any failure to the UI
                 summary["status"] = "register_failed"
                 summary["error"] = f"{type(err).__name__}: {err}"
@@ -190,10 +199,13 @@ class Recorder:
         dataset = self._catalog.create_dataset(DATASET_NAME, exist_ok=True)
         handle = dataset.register([path.resolve().as_uri()])
         result = handle.wait()
+        segment_ids = list(getattr(result, "segment_ids", []) or [])
         return {
             "dataset": DATASET_NAME,
             "uri": path.resolve().as_uri(),
-            "segment_ids": list(getattr(result, "segment_ids", []) or []),
+            "segment_ids": segment_ids,
+            # Deep links the running web viewer can `open()` directly.
+            "viewer_urls": [dataset.segment_url(seg) for seg in segment_ids],
         }
 
     def _run(self) -> None:
@@ -228,26 +240,20 @@ class Recorder:
             time.sleep(1.0 / 30.0)
 
 
-def build_page(viewer_port: int, grpc_port: int, catalog_port: int) -> str:
-    """HTML: top 80% embedded OSS viewer, bottom 20% controls."""
-
-    # The OSS web viewer reads `?url=` (repeatable) and connects to those sources:
-    # the proxy for the live stream, and the catalog to browse registered recordings.
-    proxy_uri = f"rerun+http://localhost:{grpc_port}/proxy"
-    catalog_uri = f"rerun+http://localhost:{catalog_port}"
-    viewer_src = f"http://localhost:{viewer_port}/?url={proxy_uri}&url={catalog_uri}"
-
-    return f"""<!doctype html>
+# Served at `/`. The viewer is bootstrapped from the `@rerun-io/web-viewer` package
+# (served from `/viewer/`), so we can drive it at runtime -- `viewer.open(url)` opens
+# the freshly registered recording without reloading. `__PROXY_URI__` is substituted in.
+PAGE_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Rerun control</title>
+  <title>SO-100 dataset collector</title>
   <style>
-    html, body {{ margin: 0; height: 100%; font-family: system-ui, sans-serif; }}
-    #app {{ display: flex; flex-direction: column; height: 100vh; }}
-    #viewer {{ flex: 0 0 80%; border: 0; width: 100%; }}
-    #controls {{
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #viewer { flex: 0 0 80%; width: 100%; position: relative; overflow: hidden; }
+    #controls {
       flex: 0 0 20%;
       display: flex;
       align-items: center;
@@ -256,66 +262,85 @@ def build_page(viewer_port: int, grpc_port: int, catalog_port: int) -> str:
       background: #1b1b1f;
       color: #eee;
       box-sizing: border-box;
-    }}
-    button {{
+    }
+    button {
       font-size: 1.25rem;
       padding: 0.6rem 2rem;
       border: 0;
       border-radius: 0.5rem;
       cursor: pointer;
       color: #fff;
-    }}
-    #start {{ background: #2e7d32; }}
-    #stop  {{ background: #c62828; }}
-    button:disabled {{ opacity: 0.4; cursor: default; }}
-    #status {{ margin-left: auto; font-size: 0.9rem; opacity: 0.85; max-width: 55%; text-align: right; }}
+    }
+    #start { background: #2e7d32; }
+    #stop  { background: #c62828; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    #status { margin-left: auto; font-size: 0.9rem; opacity: 0.85; max-width: 55%; text-align: right; }
   </style>
 </head>
 <body>
   <div id="app">
-    <iframe id="viewer" src="{viewer_src}" allow="fullscreen"></iframe>
+    <div id="viewer"></div>
     <div id="controls">
       <button id="start">start</button>
       <button id="stop">stop</button>
       <span id="status">…</span>
     </div>
   </div>
-  <script>
+  <script type="module">
+    import { WebViewer } from "/viewer/index.js";
+
+    const PROXY_URI = "__PROXY_URI__";
     const statusEl = document.getElementById("status");
     const startBtn = document.getElementById("start");
     const stopBtn = document.getElementById("stop");
 
-    function render(state) {{
+    const viewer = new WebViewer();
+    const viewerReady = viewer
+      .start(PROXY_URI, document.getElementById("viewer"),
+             { width: "100%", height: "100%", hide_welcome_screen: true })
+      .catch((err) => { statusEl.textContent = "viewer error: " + err; });
+
+    function render(state) {
       const running = !!(state && state.running);
       startBtn.disabled = running;
       stopBtn.disabled = !running;
-      const last = (state && state.last) || {{}};
+      const last = (state && state.last) || {};
       let msg = running ? "recording" : (last.status || "idle");
       if (last.file) msg += " · " + last.file.split("/").pop();
       if (last.error) msg += " · " + last.error;
       statusEl.textContent = msg;
-    }}
+    }
 
-    async function call(path) {{
-      try {{
-        const res = await fetch(path, {{ method: "POST" }});
-        render(await res.json());
-      }} catch (err) {{
-        statusEl.textContent = "error: " + err;
-      }}
-    }}
-
-    async function refresh() {{
-      try {{
-        const res = await fetch("/status");
-        render(await res.json());
-      }} catch (err) {{
+    async function refresh() {
+      try {
+        render(await (await fetch("/status")).json());
+      } catch (err) {
         statusEl.textContent = "control server unreachable";
-      }}
-    }}
+      }
+    }
 
-    startBtn.addEventListener("click", () => call("/start"));
-    stopBtn.addEventListener("click", () => call("/stop"));
+    startBtn.addEventListener("click", async () => {
+      try {
+        render(await (await fetch("/start", { method: "POST" })).json());
+      } catch (err) {
+        statusEl.textContent = "error: " + err;
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      try {
+        const state = await (await fetch("/stop", { method: "POST" })).json();
+        render(state);
+        const urls = (state.last && state.last.registration && state.last.registration.viewer_urls) || [];
+        await viewerReady;
+        for (const url of urls) {
+          try { viewer.open(url); } catch (err) { console.error("viewer.open failed", url, err); }
+        }
+      } catch (err) {
+        statusEl.textContent = "error: " + err;
+      }
+    });
+
     refresh();
     setInterval(refresh, 2000);
   </script>
@@ -324,7 +349,15 @@ def build_page(viewer_port: int, grpc_port: int, catalog_port: int) -> str:
 """
 
 
-def make_handler(recorder: Recorder, page: str) -> type[BaseHTTPRequestHandler]:
+def build_page(proxy_uri: str) -> str:
+    return PAGE_TEMPLATE.replace("__PROXY_URI__", proxy_uri)
+
+
+def make_handler(
+    recorder: Recorder,
+    page: bytes,
+    asset_routes: dict[str, tuple[Path, str]],
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # silence request logging
             pass
@@ -336,15 +369,26 @@ def make_handler(recorder: Recorder, page: str) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_file(self, path: Path, content_type: str) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.end_headers()
+            with path.open("rb") as file:
+                shutil.copyfileobj(file, self.wfile)
+
         def _send_state(self, state: dict[str, object]) -> None:
             self._send(200, json.dumps(state).encode("utf-8"), "application/json")
 
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
             if path in ("/", "/index.html"):
-                self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+                self._send(200, page, "text/html; charset=utf-8")
             elif path == "/status":
                 self._send_state(recorder.state())
+            elif path in asset_routes:
+                file_path, content_type = asset_routes[path]
+                self._send_file(file_path, content_type)
             else:
                 self._send(404, b"not found", "text/plain")
 
@@ -363,6 +407,9 @@ def make_handler(recorder: Recorder, page: str) -> type[BaseHTTPRequestHandler]:
 def main(config: Config) -> None:
     rr.init(APP_ID)
 
+    # Web-viewer assets (served same-origin from the control server, see below).
+    assets = ensure_web_viewer_assets(WEB_VIEWER_VERSION)
+
     # 1) gRPC proxy server -- the live data source the viewer streams from.
     #    It runs in its OWN process: `set_sinks` in this process would otherwise
     #    tear down an in-process `serve_grpc` server (the server is the sink),
@@ -377,11 +424,7 @@ def main(config: Config) -> None:
     )
     print(f"gRPC proxy server:  {proxy_uri}")
 
-    # 2) OSS web-viewer assets -- the viewer HTML/wasm hosted locally.
-    rr.start_web_viewer_server(port=config.viewer_port)
-    print(f"OSS web viewer:     http://localhost:{config.viewer_port}")
-
-    # 3) OSS catalog server -- recordings are registered here on stop.
+    # 2) OSS catalog server -- recordings are registered here on stop.
     catalog_uri = f"rerun+http://localhost:{config.catalog_port}"
     catalog_proc = subprocess.Popen(
         [sys.executable, "-m", "rerun", "server", "--port", str(config.catalog_port)],
@@ -389,10 +432,18 @@ def main(config: Config) -> None:
     print(f"OSS catalog server: {catalog_uri}")
     time.sleep(2.0)  # give the subprocess servers a moment to bind before the viewer connects
 
-    # 4) Control server -- serves the combined HTML page and the start/stop API.
+    # 3) Control server -- serves the page, the web-viewer assets, and the start/stop API.
+    #    The viewer's `index.js` dynamically imports `./re_viewer` (extensionless) and
+    #    fetches `./re_viewer_bg.wasm`, both relative to itself -- hence the `/viewer/` routes.
+    asset_routes = {
+        "/viewer/index.js": (assets["index.js"], "text/javascript"),
+        "/viewer/re_viewer": (assets["re_viewer.js"], "text/javascript"),
+        "/viewer/re_viewer.js": (assets["re_viewer.js"], "text/javascript"),
+        "/viewer/re_viewer_bg.wasm": (assets["re_viewer_bg.wasm"], "application/wasm"),
+    }
     recorder = Recorder(proxy_uri, catalog_uri, config.recordings_dir)
-    page = build_page(config.viewer_port, config.grpc_port, config.catalog_port)
-    httpd = ThreadingHTTPServer(("localhost", config.control_port), make_handler(recorder, page))
+    page = build_page(proxy_uri).encode("utf-8")
+    httpd = ThreadingHTTPServer(("localhost", config.control_port), make_handler(recorder, page, asset_routes))
     page_url = f"http://localhost:{config.control_port}"
     print(f"Control server:     {page_url}  (open this)")
     print()
@@ -411,6 +462,26 @@ def main(config: Config) -> None:
         httpd.shutdown()
         proxy_proc.terminate()
         catalog_proc.terminate()
+
+
+@dataclasses.dataclass
+class Config:
+    """Ports and paths for the servers."""
+
+    grpc_port: int = 9876
+    """Port for the Rerun gRPC proxy server."""
+
+    catalog_port: int = 51234
+    """Port for the OSS catalog server (``rerun server``)."""
+
+    control_port: int = 8000
+    """Port for the control server (serves the page, web-viewer assets, and start/stop API)."""
+
+    recordings_dir: Path = REPO_ROOT / "recordings"
+    """Folder the ``.rrd`` files are written to (default: ``recordings/`` at repo root)."""
+
+    open_browser: bool = True
+    """Open the page in the default browser on startup."""
 
 
 if __name__ == "__main__":
