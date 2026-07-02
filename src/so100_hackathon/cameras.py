@@ -60,5 +60,7 @@ class CameraStreamer:
                 rr.set_time(self.timeline, timestamp=time.time())
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 rr.log(self.entity_path, rr.Image(frame_rgb).compress(jpeg_quality=self.jpeg_quality))
+        except Exception as error:  # a crashed feed must be visible, not a silent thread death
+            print(f"camera {self.index}: streaming stopped: {error}", flush=True)
         finally:
             cap.release()

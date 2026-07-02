@@ -36,7 +36,7 @@ def create_blueprint(
     )
     telemetry = rrb.Horizontal(*[_telemetry_column(name, time_ranges) for name in arm_names])
 
-    spatial_views: list[rrb.SpaceView] = []
+    spatial_views: list[rrb.Spatial3DView | rrb.Horizontal] = []
     if show_urdf:
         spatial_views.append(
             rrb.Spatial3DView(

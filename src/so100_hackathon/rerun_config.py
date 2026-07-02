@@ -92,3 +92,10 @@ class RerunTyroConfig:
                 executable_name=self.executable_name,
                 executable_path=self.executable_path,
             )
+
+
+@dataclass
+class LiveViewerConfig(RerunTyroConfig):
+    # Realtime tools default to a live viewer. Combined with --rr-config.save this
+    # fans out to viewer + .rrd simultaneously (see RerunTyroConfig.live).
+    live: bool = True

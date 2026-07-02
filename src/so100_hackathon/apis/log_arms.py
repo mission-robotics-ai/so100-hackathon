@@ -16,7 +16,6 @@ type-checks ``main`` and the config when running under the dev environment.
 
 from __future__ import annotations
 
-import glob
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,13 +25,12 @@ import rerun as rr
 from so100_hackathon.blueprint import create_blueprint
 from so100_hackathon.calibration import MotorCalibration, fallback_calibration, load_arm_kind, load_calibration
 from so100_hackathon.cameras import CameraStreamer, detect_camera_indices
-from so100_hackathon.feetech import FeetechBus, MotorTelemetry
-from so100_hackathon.rerun_config import RerunTyroConfig
+from so100_hackathon.feetech import FeetechBus, MotorTelemetry, detect_arm_ports, usb_id_from_port
+from so100_hackathon.rerun_config import LiveViewerConfig
 from so100_hackathon.urdf_arm import FOLLOWER_URDF_PATH, LEADER_URDF_PATH, MATTE_BLACK, UrdfArm
 
-# entity subpath -> attribute of MotorTelemetry ("position_calibrated" is computed)
+# entity subpath -> attribute of MotorTelemetry (calibrated position is logged separately)
 METRICS: dict[str, str] = {
-    "position": "position_calibrated",
     "position_raw": "position_raw",
     "speed": "speed_ticks_s",
     "load": "load_pct",
@@ -40,13 +38,7 @@ METRICS: dict[str, str] = {
     "voltage": "voltage_v",
     "temperature": "temperature_c",
 }
-
-
-@dataclass
-class _ViewerConfig(RerunTyroConfig):
-    # Realtime tool: default to a live viewer. Combined with --rr-config.save this
-    # fans out to viewer + .rrd simultaneously (see RerunTyroConfig.live).
-    live: bool = True
+METRIC_SUBPATHS = ("position", *METRICS)
 
 
 @dataclass
@@ -55,11 +47,21 @@ class Arm:
     bus: FeetechBus
     calibration: list[MotorCalibration]
     urdf: UrdfArm | None = None
+    errors: int = 0
+    """Consecutive bus-read failures (reset on the first successful read)."""
+
+
+@dataclass
+class _ResolvedArm:
+    port: str
+    name: str
+    calibration: list[MotorCalibration]
+    is_leader: bool | None
 
 
 @dataclass
 class LogArmsConfig:
-    rr_config: _ViewerConfig = field(default_factory=_ViewerConfig)
+    rr_config: LiveViewerConfig = field(default_factory=LiveViewerConfig)
     ports: tuple[str, ...] = ()
     """Serial ports of the arms. Default: every /dev/cu.usbmodem* found."""
     names: tuple[str, ...] = ()
@@ -89,15 +91,15 @@ class LogArmsConfig:
 
 
 def _open_arms(config: LogArmsConfig) -> list[Arm]:
-    ports = config.ports or tuple(sorted(glob.glob("/dev/cu.usbmodem*")))
+    ports = config.ports or detect_arm_ports()
     if not ports:
         raise SystemExit("no SO-100 arms found (no /dev/cu.usbmodem* ports); pass --ports explicitly")
 
     # Resolve each port's name, calibration, and leader/follower kind first, so the
     # leader can be placed on the left (first position) regardless of port order.
-    resolved: list[tuple[str, str, list[MotorCalibration], bool | None]] = []
+    resolved: list[_ResolvedArm] = []
     for i, port in enumerate(ports):
-        usb_id = port.rsplit("usbmodem", 1)[-1]
+        usb_id = usb_id_from_port(port)
         name = config.names[i] if i < len(config.names) else usb_id
         calibration_path = config.calibration_dir / f"{usb_id}.json"
         try:
@@ -111,48 +113,48 @@ def _open_arms(config: LogArmsConfig) -> list[Arm]:
         else:
             kind = load_arm_kind(calibration_path)
             is_leader = None if kind is None else kind == "leader"
-        resolved.append((port, name, calibration, is_leader))
+        resolved.append(_ResolvedArm(port=port, name=name, calibration=calibration, is_leader=is_leader))
 
     # A two-arm rig is one leader + one follower: fill in whichever is unidentified.
     if len(resolved) == 2:
-        kinds = [r[3] for r in resolved]
-        if kinds.count(None) == 1:
-            missing = kinds.index(None)
-            resolved[missing] = (*resolved[missing][:3], not kinds[1 - missing])
-        elif kinds.count(None) == 2:
-            resolved[0] = (*resolved[0][:3], True)
-            resolved[1] = (*resolved[1][:3], False)
+        unknown = [arm for arm in resolved if arm.is_leader is None]
+        if len(unknown) == 1:
+            known = next(arm for arm in resolved if arm.is_leader is not None)
+            unknown[0].is_leader = not known.is_leader
+        elif len(unknown) == 2:
+            resolved[0].is_leader = True
+            resolved[1].is_leader = False
             print(
-                f"GUESSING {resolved[0][1]} is the leader — pass --leader <usb_id> if wrong, "
+                f"GUESSING {resolved[0].name} is the leader — pass --leader <usb_id> if wrong, "
                 "or calibrate with --leader to make it permanent",
                 flush=True,
             )
-    resolved.sort(key=lambda r: not r[3])  # leader first -> leftmost
-    for _, name, _, is_leader in resolved:
-        print(f"{name}: {'LEADER' if is_leader else 'follower'}", flush=True)
+    resolved.sort(key=lambda arm: not arm.is_leader)  # leader first -> leftmost
+    for arm in resolved:
+        print(f"{arm.name}: {'LEADER' if arm.is_leader else 'follower'}", flush=True)
 
     arms: list[Arm] = []
-    for i, (port, name, calibration, is_leader) in enumerate(resolved):
+    for i, res in enumerate(resolved):
         urdf = None
         if config.urdf:
             urdf = UrdfArm.create(
-                name,
-                calibration,
-                urdf_path=LEADER_URDF_PATH if is_leader else FOLLOWER_URDF_PATH,
+                res.name,
+                res.calibration,
+                urdf_path=LEADER_URDF_PATH if res.is_leader else FOLLOWER_URDF_PATH,
                 translation=(0.0, -i * config.arm_spacing, 0.0),
                 center_angles_deg=config.joint_offsets_deg,
                 color=MATTE_BLACK,
             )
-        arms.append(Arm(name=name, bus=FeetechBus(port), calibration=calibration, urdf=urdf))
+        arms.append(Arm(name=res.name, bus=FeetechBus(res.port), calibration=res.calibration, urdf=urdf))
     return arms
 
 
 def _log_arm(arm: Arm) -> None:
     telemetry: list[MotorTelemetry] = arm.bus.read_telemetry()
     calibrated = [calib.calibrated_from_raw(t.position_raw) for calib, t in zip(arm.calibration, telemetry, strict=True)]
+    rr.log(f"{arm.name}/position", rr.Scalars(calibrated))
     for subpath, attr in METRICS.items():
-        values = calibrated if attr == "position_calibrated" else [float(getattr(t, attr)) for t in telemetry]
-        rr.log(f"{arm.name}/{subpath}", rr.Scalars(values))
+        rr.log(f"{arm.name}/{subpath}", rr.Scalars([float(getattr(t, attr)) for t in telemetry]))
     if arm.urdf is not None:
         arm.urdf.log_joints(calibrated)
 
@@ -163,7 +165,7 @@ def main(config: LogArmsConfig) -> None:
     # Name the per-motor series once, statically, so plot legends show joint names.
     for arm in arms:
         motor_names = [calib.motor_name for calib in arm.calibration]
-        for subpath in METRICS:
+        for subpath in METRIC_SUBPATHS:
             rr.log(f"{arm.name}/{subpath}", rr.SeriesLines(names=motor_names), static=True)
 
     camera_indices = detect_camera_indices() if config.cameras is None else config.cameras
@@ -186,25 +188,26 @@ def main(config: LogArmsConfig) -> None:
     deadline: float | None = None if config.seconds is None else time.monotonic() + config.seconds
     frames = 0
     rate_t0 = time.monotonic()
-    consecutive_errors = 0
+    max_errors = int(30.0 * config.fps)  # give up after ~30s of continuous failure
+    reconnect_every = max(1, int(config.fps))  # attempt a reconnect roughly once a second
     print(f"streaming {len(arms)} arm(s) + {len(streamers)} camera(s) at target {config.fps:.0f} Hz (Ctrl-C to stop)...", flush=True)
     try:
         while True:
             loop_start = time.monotonic()
             rr.set_time("time", timestamp=time.time())
             for arm in arms:
-                # Tolerate transient bus glitches (bad packets, USB drops); retry with
-                # periodic reconnect attempts and only give up after ~30s of failures.
+                # Tolerate transient bus glitches (bad packets, USB drops) per arm, so one
+                # unplugged arm never stalls the others; frame pacing spaces the retries.
                 try:
                     _log_arm(arm)
-                    consecutive_errors = 0
+                    arm.errors = 0
                 except RuntimeError as error:
-                    consecutive_errors += 1
-                    print(f"bus read failed ({consecutive_errors}): {error}", flush=True)
-                    if consecutive_errors >= 60:
+                    arm.errors += 1
+                    if arm.errors == 1 or arm.errors % reconnect_every == 0:
+                        print(f"{arm.name}: bus read failed ({arm.errors}): {error}", flush=True)
+                    if arm.errors >= max_errors:
                         raise
-                    time.sleep(0.5)
-                    if consecutive_errors % 4 == 0:
+                    if arm.errors % reconnect_every == 0:
                         try:
                             arm.bus.reconnect()
                             print(f"{arm.name}: reconnected", flush=True)
