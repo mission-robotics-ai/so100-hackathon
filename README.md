@@ -10,6 +10,15 @@ URDF animation; the SO-ARM100 model in `data/so100/` comes from that example's d
 
 ## Setup
 
+Everything runs through [Pixi](https://pixi.sh) — install it first if you don't have it
+([install docs](https://pixi.prefix.dev/latest/installation/)):
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | sh
+```
+
+Then, from the repo root:
+
 ```bash
 pixi install
 ```
