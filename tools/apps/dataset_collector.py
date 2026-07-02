@@ -150,9 +150,7 @@ class FakeSource:
 
         angles = np.linspace(0.0, 2.0 * math.pi, 64, endpoint=False) + t
         radius = 1.0 + 0.25 * math.sin(t)
-        positions = np.column_stack(
-            [radius * np.cos(angles), radius * np.sin(angles), 0.15 * np.sin(3.0 * angles + t)]
-        )
+        positions = np.column_stack([radius * np.cos(angles), radius * np.sin(angles), 0.15 * np.sin(3.0 * angles + t)])
         colors = np.column_stack(
             [
                 (0.5 + 0.5 * np.sin(angles)) * 255,
@@ -246,8 +244,7 @@ class Recorder:
                 summary["status"] = "registered"
                 registration = summary["registration"]
                 print(
-                    f"[catalog]   registered {path} in dataset '{DATASET_NAME}' "
-                    f"(segments: {registration['segment_ids']})",  # type: ignore[index]
+                    f"[catalog]   registered {path} in dataset '{DATASET_NAME}' (segments: {registration['segment_ids']})",  # type: ignore[index]
                     flush=True,
                 )
             except Exception as err:  # noqa: BLE001 - surface any failure to the UI

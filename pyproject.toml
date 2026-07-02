@@ -92,8 +92,12 @@ sort_by_size = true
 min_confidence = 60
 # Framework-used names vulture can't see through: the tyro config field consumed via
 # RerunTyroConfig.__post_init__, MotorTelemetry fields read dynamically via getattr in
-# log_arms.METRICS, and the vendored RerunTyroConfig.rec_stream handle.
-ignore_names = ["rr_config", "rec_stream", "speed_ticks_s", "load_pct", "voltage_v", "temperature_c", "current_ma"]
+# log_arms.METRICS, the vendored RerunTyroConfig.rec_stream handle, http.server's
+# handler hooks (dataset_collector), and its _rec recording-stream keep-alive.
+ignore_names = [
+    "rr_config", "rec_stream", "speed_ticks_s", "load_pct", "voltage_v", "temperature_c", "current_ma",
+    "do_GET", "do_POST", "log_message", "args", "_rec",
+]
 
 [tool.ruff]
 line-length = 150
