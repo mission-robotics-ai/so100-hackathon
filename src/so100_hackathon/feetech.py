@@ -9,6 +9,7 @@ rerun-io/portugal ``src/robot.rs``, but fast enough for realtime logging.
 from __future__ import annotations
 
 import contextlib
+import glob
 from dataclasses import dataclass
 
 import scservo_sdk as scs
@@ -16,7 +17,15 @@ import scservo_sdk as scs
 BAUD_RATE = 1_000_000
 PROTOCOL_END = 0  # STS/SMS series byte order
 TICKS_PER_REV = 4096
-CENTER_TICKS = 2048
+
+
+def detect_arm_ports() -> tuple[str, ...]:
+    """Every SO-100 serial adapter currently on the bus (macOS device names)."""
+    return tuple(sorted(glob.glob("/dev/cu.usbmodem*")))
+
+
+def usb_id_from_port(port: str) -> str:
+    return port.rsplit("usbmodem", 1)[-1]
 
 # STS3215 control table: contiguous block covering every Present_* register.
 ADDR_PRESENT_POSITION = 56  # 2 bytes, ticks (0..4095)

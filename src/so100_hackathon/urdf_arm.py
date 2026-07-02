@@ -22,7 +22,7 @@ from pathlib import Path
 
 import rerun as rr
 
-from so100_hackathon.calibration import MotorCalibration
+from so100_hackathon.calibration import CalibMode, MotorCalibration
 
 FOLLOWER_URDF_PATH = Path(__file__).parents[2] / "data" / "so100" / "so100.urdf"
 LEADER_URDF_PATH = Path(__file__).parents[2] / "data" / "so101_leader" / "so101_leader.urdf"
@@ -55,7 +55,7 @@ def _rpy_matrix(roll_deg: float, pitch_deg: float, yaw_deg: float) -> list[list[
 class UrdfArm:
     name: str
     joints: list[rr.urdf.UrdfJoint]
-    calib_modes: list[str]
+    calib_modes: list[CalibMode]
     center_angles_rad: list[float]
     """URDF joint angle at calibrated 0 deg (the calibration reference pose)."""
     collision_geometries_path: str
@@ -99,13 +99,12 @@ class UrdfArm:
             center_angles_rad = [math.radians(deg) for deg in center_angles_deg]
         else:
             center_angles_rad = [(j.limit_lower + j.limit_upper) / 2.0 for j in joints]
-        robot_name = tree.name() if callable(tree.name) else tree.name
         return cls(
             name=name,
             joints=joints,
             calib_modes=[calib.calib_mode for calib in calibration],
             center_angles_rad=center_angles_rad,
-            collision_geometries_path=f"{name}/{robot_name}/collision_geometries",
+            collision_geometries_path=f"{name}/{tree.name}/collision_geometries",
         )
 
     def joint_angle_rad(self, joint_index: int, calibrated: float) -> float:

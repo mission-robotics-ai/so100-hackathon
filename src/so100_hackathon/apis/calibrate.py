@@ -21,7 +21,6 @@ Writes ``calibrations/<usb_id>.json`` in the portugal format that
 
 from __future__ import annotations
 
-import glob
 import select
 import sys
 import threading
@@ -33,8 +32,8 @@ import rerun as rr
 import rerun.blueprint as rrb
 
 from so100_hackathon.calibration import DEFAULT_MOTOR_NAMES, MotorCalibration, fallback_calibration, save_calibration
-from so100_hackathon.feetech import TICKS_PER_REV, FeetechBus
-from so100_hackathon.rerun_config import RerunTyroConfig
+from so100_hackathon.feetech import TICKS_PER_REV, FeetechBus, detect_arm_ports, usb_id_from_port
+from so100_hackathon.rerun_config import LiveViewerConfig
 from so100_hackathon.urdf_arm import FOLLOWER_URDF_PATH, LEADER_URDF_PATH, MATTE_BLACK, UrdfArm
 
 GRIPPER_INDEX = 5
@@ -44,13 +43,8 @@ MIN_SWEEP_TICKS = 300  # ~26 deg; a joint swept less than this probably wasn't m
 
 
 @dataclass
-class _ViewerConfig(RerunTyroConfig):
-    live: bool = True
-
-
-@dataclass
 class CalibrateConfig:
-    rr_config: _ViewerConfig = field(default_factory=_ViewerConfig)
+    rr_config: LiveViewerConfig = field(default_factory=LiveViewerConfig)
     port: str | None = None
     """Serial port of the arm to calibrate. Default: the single /dev/cu.usbmodem*, or an error listing the options."""
     leader: bool = False
@@ -65,20 +59,24 @@ class _LiveArmFeed:
         self.bus = bus
         self.urdf = urdf
         self.latest_raw: list[int] | None = None
-        self.range_min: list[int] = [TICKS_PER_REV] * len(DEFAULT_MOTOR_NAMES)
-        self.range_max: list[int] = [0] * len(DEFAULT_MOTOR_NAMES)
+        self.reset_ranges()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="live-arm", daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         fallback = fallback_calibration()
+        failures = 0
         while not self._stop.is_set():
             try:
                 telemetry = self.bus.read_telemetry()
-            except RuntimeError:
+            except RuntimeError as error:
+                failures += 1
+                if failures == 1 or failures % 50 == 0:  # ~every 5s; a hung table should be diagnosable
+                    print(f"\nbus read failed ({failures}): {error}", flush=True)
                 time.sleep(0.1)
                 continue
+            failures = 0
             raw = [t.position_raw for t in telemetry]
             self.latest_raw = raw
             self.range_min = [min(lo, r) for lo, r in zip(self.range_min, raw, strict=True)]
@@ -117,14 +115,14 @@ def _sweep_until_enter(feed: _LiveArmFeed) -> None:
 
 
 def main(config: CalibrateConfig) -> None:
-    ports = (config.port,) if config.port else tuple(sorted(glob.glob("/dev/cu.usbmodem*")))
+    ports = (config.port,) if config.port else detect_arm_ports()
     if not ports:
         raise SystemExit("no SO-100 arms found (no /dev/cu.usbmodem* ports); pass --port explicitly")
     if len(ports) > 1:
         listing = "\n  ".join(ports)
         raise SystemExit(f"multiple arms plugged in, pick one with --port:\n  {listing}")
     port = ports[0]
-    usb_id = port.rsplit("usbmodem", 1)[-1]
+    usb_id = usb_id_from_port(port)
     out_path = config.calibration_dir / f"{usb_id}.json"
 
     placeholder = fallback_calibration()

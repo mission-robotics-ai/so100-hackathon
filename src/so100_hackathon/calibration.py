@@ -41,11 +41,6 @@ class MotorCalibration:
         pos = (raw_homed - float(self.start_pos)) / float(self.end_pos - self.start_pos)
         return pos * 180.0 if self.calib_mode == "DEGREE" else pos * 100.0
 
-    def raw_from_calibrated(self, calibrated: float) -> int:
-        pos = calibrated / 180.0 if self.calib_mode == "DEGREE" else calibrated / 100.0
-        raw_homed = pos * float(self.end_pos - self.start_pos) + float(self.start_pos)
-        return int(raw_homed + float(self.homing_offset))
-
 
 def load_calibration(path: Path) -> list[MotorCalibration]:
     raw = json.loads(path.read_text())
