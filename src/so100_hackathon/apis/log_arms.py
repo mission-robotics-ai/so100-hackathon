@@ -16,6 +16,7 @@ type-checks ``main`` and the config when running under the dev environment.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -223,19 +224,19 @@ def _drive_follower(leader: Arm, follower: Arm, *, blend: float, max_step: float
 
 
 class ArmSession:
-    """Reusable non-teleop arm + camera logging, for embedding in an external loop.
+    """Always-on arm + camera logging (optionally with teleop), for the dataset collector.
 
-    Unlike ``main`` (which owns the viewer, the loop, and teleop), this opens the hardware
-    once and exposes the per-frame pieces so another driver (e.g. the dataset collector) can
-    control the recording lifecycle:
+    Unlike ``main`` (which owns the viewer and its own loop), this opens the hardware once
+    and, on :meth:`start`, runs its own background loop that reads every arm, optionally
+    drives the follower to mirror the leader (teleop), and logs a frame -- continuously, into
+    whatever recording is the current default. The collector swaps the default recording (and
+    its sinks) to start/stop recording *takes* without interrupting teleop or the live view.
 
-    * ``begin()`` — call after starting each new recording; (re-)logs the static per-motor
-      series names and the blueprint into the now-current recording.
-    * ``log_frame()`` — read every arm once and log it, tolerating transient bus glitches.
-    * ``close()`` — stop the cameras and close the buses.
-
-    The cameras stream on their own threads (started here) into whatever recording is the
-    current default when they log, so they keep running across recordings.
+    * :meth:`start` — arm the follower (if teleop) and start the camera + logging threads.
+      Call once a log sink is attached.
+    * :meth:`begin` — (re-)log the static per-motor series, URDF meshes, and blueprint into
+      the now-current recording; the collector calls this for each new take.
+    * :meth:`close` — stop the threads, release the follower's torque, close the buses.
     """
 
     def __init__(self, config: LogArmsConfig) -> None:
@@ -244,16 +245,42 @@ class ArmSession:
         camera_indices = detect_camera_indices() if config.cameras is None else config.cameras
         self.streamers = [CameraStreamer(index, jpeg_quality=config.jpeg_quality) for index in camera_indices]
         self._reconnect_every = max(1, int(config.fps))  # attempt a reconnect roughly once a second
-        print(f"arm session: {len(self.arms)} arm(s) + {len(self.streamers)} camera(s)", flush=True)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._teleop_t0: float | None = None  # ramp anchor; None whenever driving is paused
+        self._write_errors = 0
+
+        # Teleop: resolve the leader/follower pair, degrading gracefully if the rig can't do it.
+        self._leader: Arm | None = None
+        self._follower: Arm | None = None
+        if config.teleop:
+            leader = next((arm for arm in self.arms if arm.is_leader), None)
+            follower = next((arm for arm in self.arms if not arm.is_leader), None)
+            if len(self.arms) == 2 and leader is not None and follower is not None and leader.calibrated and follower.calibrated and follower.ranges is not None:
+                self._leader, self._follower = leader, follower
+            else:
+                print("teleop requested but needs two calibrated arms (with a follower range) — running WITHOUT teleop", flush=True)
+
+        teleop_note = ""
+        if self._leader is not None and self._follower is not None:
+            teleop_note = f", teleop {self._follower.name} <- {self._leader.name}"
+        print(f"arm session: {len(self.arms)} arm(s) + {len(self.streamers)} camera(s){teleop_note}", flush=True)
 
     @property
     def fps(self) -> float:
         return self.config.fps
 
     def start(self) -> None:
-        """Start the camera threads. Call once a log sink is attached (they stream immediately)."""
+        """Arm the follower (if teleop) and start the camera + logging threads."""
         for streamer in self.streamers:
             streamer.start()
+        if self._follower is not None and self._leader is not None:
+            self._follower.bus.set_torque(False)
+            self._follower.bus.configure_follower_control()
+            self._follower.bus.set_torque(True)
+            print(f"teleop: {self._follower.name} torque ON, mirroring {self._leader.name}", flush=True)
+        self._thread = threading.Thread(target=self._run, name="arm-session", daemon=True)
+        self._thread.start()
 
     def begin(self) -> None:
         for arm in self.arms:
@@ -262,6 +289,9 @@ class ArmSession:
                 rr.log(f"{arm.name}/{subpath}", rr.SeriesLines(names=motor_names), static=True)
             if arm.urdf is not None:
                 arm.urdf.log_static()  # re-log the meshes into this take's recording
+        if self._follower is not None:
+            goal_names = [f"{calib.motor_name} goal" for calib in self._follower.calibration]
+            rr.log(f"{self._follower.name}/goal", rr.SeriesLines(names=goal_names), static=True)
         rr.send_blueprint(
             create_blueprint(
                 [arm.name for arm in self.arms],
@@ -273,27 +303,64 @@ class ArmSession:
             make_active=True,
         )
 
-    def log_frame(self) -> None:
-        rr.set_time("time", timestamp=time.time())
-        for arm in self.arms:
-            # Tolerate transient bus glitches per arm, so one unplugged arm never stalls the others.
-            try:
-                _log_arm(arm)
-                arm.errors = 0
-            except RuntimeError as error:
-                arm.errors += 1
-                if arm.errors == 1 or arm.errors % self._reconnect_every == 0:
-                    print(f"{arm.name}: bus read failed ({arm.errors}): {error}", flush=True)
-                if arm.errors % self._reconnect_every == 0:
+    def _run(self) -> None:
+        frame_time = 1.0 / self.config.fps
+        while not self._stop.is_set():
+            loop_start = time.monotonic()
+            rr.set_time("time", timestamp=time.time())
+            for arm in self.arms:
+                # Tolerate transient bus glitches per arm, so one unplugged arm never stalls the others.
+                try:
+                    recovering = arm.errors > 0
+                    _log_arm(arm)
+                    arm.errors = 0
+                    if recovering and arm is self._follower:
+                        # A servo power blip resets Torque_Enable, and goal writes are
+                        # fire-and-forget — re-arm, or teleop resumes silently limp.
+                        arm.bus.set_torque(True)
+                        print(f"{arm.name}: recovered — torque re-armed", flush=True)
+                except RuntimeError as error:
+                    arm.errors += 1
+                    if arm.errors == 1 or arm.errors % self._reconnect_every == 0:
+                        print(f"{arm.name}: bus read failed ({arm.errors}): {error}", flush=True)
+                    if arm.errors % self._reconnect_every == 0:
+                        try:
+                            arm.bus.reconnect()
+                            print(f"{arm.name}: reconnected", flush=True)
+                        except (RuntimeError, OSError):
+                            pass  # device still gone; keep retrying
+
+            if self._leader is not None and self._follower is not None:
+                if self._leader.errors == 0 and self._follower.errors == 0:
+                    if self._teleop_t0 is None:  # first drive, or resuming after a dropout
+                        self._teleop_t0 = loop_start
+                    blend = min(1.0, (loop_start - self._teleop_t0) / TELEOP_RAMP_SECONDS)
                     try:
-                        arm.bus.reconnect()
-                        print(f"{arm.name}: reconnected", flush=True)
-                    except (RuntimeError, OSError):
-                        pass  # device still gone; keep retrying
+                        _drive_follower(self._leader, self._follower, blend=blend, max_step=self.config.max_relative_target)
+                        self._write_errors = 0
+                    except RuntimeError as error:
+                        self._write_errors += 1
+                        if self._write_errors == 1 or self._write_errors % self._reconnect_every == 0:
+                            print(f"{self._follower.name}: goal write failed ({self._write_errors}): {error}", flush=True)
+                else:
+                    self._teleop_t0 = None  # a bus dropped: restart the ramp on resume
+
+            sleep_s = frame_time - (time.monotonic() - loop_start)
+            if sleep_s > 0.0:
+                time.sleep(sleep_s)
 
     def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
         for streamer in self.streamers:
             streamer.stop()
+        if self._follower is not None:
+            try:
+                self._follower.bus.set_torque(False)
+                print(f"{self._follower.name}: torque released", flush=True)
+            except (RuntimeError, OSError) as error:
+                print(f"{self._follower.name}: FAILED to release torque ({error}) — power-cycle the arm to free it", flush=True)
         for arm in self.arms:
             arm.bus.close()
 
