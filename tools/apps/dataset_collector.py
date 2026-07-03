@@ -360,30 +360,20 @@ class Recorder:
         # newer rerun-sdk (LeRobot only uses rerun-sdk for its own optional viz, not export).
         cmd = [
             "uvx",
-            "--from",
-            LEROBOT_REQUIREMENT,
-            "--overrides",
-            str(LEROBOT_OVERRIDE),
+            f"--from={LEROBOT_REQUIREMENT}",
+            f"--overrides={LEROBOT_OVERRIDE}",
             "rerun-lerobot",
-            "--rrd-dir",
-            str(self._recordings_dir),
-            "--output",
-            str(out),
-            "--dataset-name",
-            DATASET_NAME,
-            "--repo-id",
-            DATASET_NAME,
-            "--fps",
-            str(int(round(self._fps))),
-            "--index",
-            "time",
-            "--action",
-            str(specs["action"]),
-            "--state",
-            str(specs["state"]),
+            f"--rrd-dir={self._recordings_dir}",
+            f"--output={out}",
+            f"--dataset-name={DATASET_NAME}",
+            f"--repo-id={DATASET_NAME}",
+            f"--fps={int(round(self._fps))}",
+            "--index=time",
+            f"--action={specs['action']}",
+            f"--state={specs['state']}",
         ]
         for key, path in specs["videos"]:  # type: ignore[union-attr]
-            cmd += ["--video", f"{key}:{path}"]
+            cmd += [f"--video={key}:{path}"]
 
         print(f"[export]    {' '.join(cmd)}", flush=True)
         summary: dict[str, object] = {"output": str(out), "warnings": specs["warnings"]}
