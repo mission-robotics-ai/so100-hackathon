@@ -69,6 +69,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_ID = "so-100"
 DATASET_NAME = "recordings"
 
+# The "export to LeRobot" button runs rerun-lerobot in an isolated `uvx` env (see
+# Recorder._run_export). >=0.2.0 re-encodes our JPEG camera frames to h264; the override
+# file keeps our newer rerun-sdk instead of the old one lerobot pins.
+LEROBOT_REQUIREMENT = "rerun-lerobot>=0.2.0"
+LEROBOT_OVERRIDE = REPO_ROOT / "pixi.lerobot-override.txt"
+
 # The web-viewer npm package is fetched once and served by the control server. Its
 # version must match the installed rerun-sdk (the wasm-bindgen glue is build-specific).
 WEB_VIEWER_VERSION = rr.__version__
@@ -348,10 +354,17 @@ class Recorder:
 
     def _run_export(self, specs: dict[str, object]) -> None:
         out = self._lerobot_dir / f"{DATASET_NAME}-{time.strftime('%Y%m%d-%H%M%S')}"
+        # Run rerun-lerobot in an isolated uv tool env, NOT our pixi env: it drags in torch,
+        # opencv, wandb, ... (all core lerobot deps) and pins an older rerun-sdk. `uvx` keeps
+        # that heavy, conflicting dependency tree out of the app env; --overrides holds our
+        # newer rerun-sdk (LeRobot only uses rerun-sdk for its own optional viz, not export).
         cmd = [
-            sys.executable,
-            "-m",
-            "rerun_lerobot",
+            "uvx",
+            "--from",
+            LEROBOT_REQUIREMENT,
+            "--overrides",
+            str(LEROBOT_OVERRIDE),
+            "rerun-lerobot",
             "--rrd-dir",
             str(self._recordings_dir),
             "--output",
@@ -378,7 +391,7 @@ class Recorder:
             proc = subprocess.run(cmd, capture_output=True, text=True)
         except FileNotFoundError as err:
             summary["status"] = "error"
-            summary["error"] = f"could not run rerun-lerobot: {err} (try `pixi run install-lerobot`)"
+            summary["error"] = f"could not run uvx: {err} (is `uv` installed? run `pixi install`)"
         else:
             if proc.returncode == 0:
                 summary["status"] = "done"
@@ -386,8 +399,6 @@ class Recorder:
             else:
                 output = (proc.stderr or proc.stdout).strip()
                 tail = output.splitlines()[-1] if output else "conversion failed"
-                if "No module named" in output and "rerun_lerobot" in output:
-                    tail = "rerun-lerobot is not installed (run `pixi run install-lerobot`)"
                 summary["status"] = "error"
                 summary["error"] = tail
                 print(f"[export]    FAILED:\n{output}", flush=True)

@@ -24,6 +24,7 @@ numpy = "*"
 tyro = "*"
 pyserial = "*"
 py-opencv = "*"
+uv = "*"  # dataset_collector's "export to LeRobot" runs rerun-lerobot via `uvx` (isolated env)
 
 [tool.pixi.target.osx-arm64.dependencies]
 # Camera enumeration in OpenCV's exact index order (to skip the built-in webcam).
@@ -73,12 +74,14 @@ description = "Find dead code in the package"
 default = { solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
 
-# rerun-lerobot can't live in the solve: it pulls in `lerobot`, which pins `rerun-sdk<0.27`,
-# conflicting with our `rerun-sdk==0.33.1`. Install it separately with an override that keeps
-# our newer rerun-sdk (LeRobot only uses rerun-sdk for its own optional viz, not the export).
-[tool.pixi.tasks.install-lerobot]
-cmd = "uv pip install 'rerun-lerobot>=0.2.0' --override pixi.lerobot-override.txt --python $CONDA_PREFIX/bin/python"
-description = "Install rerun-lerobot into the pixi env (for the dataset collector's 'export to LeRobot' button)"
+# rerun-lerobot can't live in the solve: it pulls in `lerobot` (torch, opencv, wandb, ... all
+# core deps), which also pins `rerun-sdk<0.27`, conflicting with our `rerun-sdk==0.33.1`. The
+# collector's "export to LeRobot" runs it in an isolated `uvx` env instead, so that heavy tree
+# never enters our env. This task just pre-warms that env (optional; the first export builds it
+# on demand). The override keeps our newer rerun-sdk (LeRobot only uses it for optional viz).
+[tool.pixi.tasks.warm-lerobot]
+cmd = "uvx --from 'rerun-lerobot>=0.2.0' --overrides pixi.lerobot-override.txt rerun-lerobot --help"
+description = "Pre-build the isolated uvx env for the dataset collector's 'export to LeRobot' button"
 
 [tool.pixi.tasks.dataset-collector]
 cmd = "python tools/apps/dataset_collector.py"

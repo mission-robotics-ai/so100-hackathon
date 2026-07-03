@@ -1,7 +1,16 @@
 version: 7
 platforms:
 - name: linux-64
+  virtual-packages:
+  - __unix=0=0
+  - __linux=4.18
+  - __glibc=2.28
+  - __archspec=0=x86_64
 - name: osx-arm64
+  virtual-packages:
+  - __unix=0=0
+  - __osx=13.0
+  - __archspec=0=m1
 environments:
   default:
     channels:
@@ -215,6 +224,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/svt-av1-4.0.1-hecca717_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tbb-2023.0.0-hab88423_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tk-8.6.13-noxft_h366c992_103.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/uv-0.11.26-h26efc2c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/wayland-1.25.0-hd6090a7_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/wrapt-2.2.2-py314h5bd0f2a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/x264-1!164.3095-h166bdaf_2.tar.bz2
@@ -298,7 +308,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/wcwidth-0.8.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/widgetsnbextension-4.0.15-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: .
+      - pypi: ./
       - pypi: https://files.pythonhosted.org/packages/37/ee/478689c69b3cb1ccabb2d52feac0c181f6cdf20b51a81df35344b1dab9a6/datafusion-52.3.0-cp310-abi3-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/5f/8e/c53d6f9a8bf3a86a635b58eeb675723f1b040f1665a0681467756c8989aa/feetech-servo-sdk-1.0.0.tar.gz
       osx-arm64:
@@ -528,6 +538,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/svt-av1-4.0.1-h0cb729a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/tbb-2023.0.0-he0260a5_2.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/tk-8.6.13-h010d191_3.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-arm64/uv-0.11.26-hc169f86_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/wrapt-2.2.2-py313h0997733_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/x264-1!164.3095-h57fd34a_2.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/x265-3.5-hbc6ce65_3.tar.bz2
@@ -537,7 +548,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-1.3.2-h8088a28_2.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-hed4e4f5_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hbf9d68e_6.conda
-      - pypi: .
+      - pypi: ./
       - pypi: https://files.pythonhosted.org/packages/5f/8e/c53d6f9a8bf3a86a635b58eeb675723f1b040f1665a0681467756c8989aa/feetech-servo-sdk-1.0.0.tar.gz
       - pypi: https://files.pythonhosted.org/packages/d6/e3/ea3b79239953c3044d19d8e9581015da025b6640796db03799e435b17910/datafusion-52.3.0-cp310-abi3-macosx_11_0_arm64.whl
   dev:
@@ -754,6 +765,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/svt-av1-4.0.1-hecca717_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tbb-2023.0.0-hab88423_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tk-8.6.13-noxft_h366c992_103.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/uv-0.11.26-h26efc2c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/wayland-1.25.0-hd6090a7_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/wrapt-2.2.2-py314h5bd0f2a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/x264-1!164.3095-h166bdaf_2.tar.bz2
@@ -845,7 +857,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/wcwidth-0.8.2-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/widgetsnbextension-4.0.15-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: .
+      - pypi: ./
       - pypi: https://files.pythonhosted.org/packages/37/ee/478689c69b3cb1ccabb2d52feac0c181f6cdf20b51a81df35344b1dab9a6/datafusion-52.3.0-cp310-abi3-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/5f/8e/c53d6f9a8bf3a86a635b58eeb675723f1b040f1665a0681467756c8989aa/feetech-servo-sdk-1.0.0.tar.gz
       osx-arm64:
@@ -1085,6 +1097,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/svt-av1-4.0.1-h0cb729a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/tbb-2023.0.0-he0260a5_2.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/tk-8.6.13-h010d191_3.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-arm64/uv-0.11.26-hc169f86_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/wrapt-2.2.2-py313h0997733_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/x264-1!164.3095-h57fd34a_2.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/x265-3.5-hbc6ce65_3.tar.bz2
@@ -1094,7 +1107,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-1.3.2-h8088a28_2.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zlib-ng-2.3.3-hed4e4f5_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/zstd-1.5.7-hbf9d68e_6.conda
-      - pypi: .
+      - pypi: ./
       - pypi: https://files.pythonhosted.org/packages/5f/8e/c53d6f9a8bf3a86a635b58eeb675723f1b040f1665a0681467756c8989aa/feetech-servo-sdk-1.0.0.tar.gz
       - pypi: https://files.pythonhosted.org/packages/d6/e3/ea3b79239953c3044d19d8e9581015da025b6640796db03799e435b17910/datafusion-52.3.0-cp310-abi3-macosx_11_0_arm64.whl
 packages:
@@ -4733,6 +4746,20 @@ packages:
     - tk >=8.6.13,<8.7.0a0
   size: 3301196
   timestamp: 1769460227866
+- conda: https://conda.anaconda.org/conda-forge/linux-64/uv-0.11.26-h26efc2c_0.conda
+  sha256: fc2567e4507d436c247e0d175991c5929011a3141f4a0fabff515ce6328bb3a0
+  md5: f34a1bce60a945c8dac9784ebb495d62
+  depends:
+  - libgcc >=14
+  - libstdcxx >=14
+  - __glibc >=2.17,<3.0.a0
+  constrains:
+  - __glibc >=2.17
+  license: Apache-2.0 OR MIT
+  purls: []
+  run_exports: {}
+  size: 20530051
+  timestamp: 1782834625037
 - conda: https://conda.anaconda.org/conda-forge/linux-64/wayland-1.25.0-hd6090a7_0.conda
   sha256: ea374d57a8fcda281a0a89af0ee49a2c2e99cc4ac97cf2e2db7064e74e764bdb
   md5: 996583ea9c796e5b915f7d7580b51ea6
@@ -5607,7 +5634,7 @@ packages:
   license: BSD-3-Clause
   license_family: BSD
   purls:
-  - pkg:pypi/matplotlib-inline?source=compressed-mapping
+  - pkg:pypi/matplotlib-inline?source=hash-mapping
   run_exports: {}
   size: 15725
   timestamp: 1778264403247
@@ -5896,7 +5923,7 @@ packages:
   license: BSD-3-Clause
   license_family: BSD
   purls:
-  - pkg:pypi/traitlets?source=compressed-mapping
+  - pkg:pypi/traitlets?source=hash-mapping
   run_exports: {}
   size: 115158
   timestamp: 1780507822178
@@ -9008,6 +9035,19 @@ packages:
     - tk >=8.6.13,<8.7.0a0
   size: 3127137
   timestamp: 1769460817696
+- conda: https://conda.anaconda.org/conda-forge/osx-arm64/uv-0.11.26-hc169f86_0.conda
+  sha256: f6607da92703f9b01a380aee425aca44aca8eaa1c9ad998dcbd5049ce4a6787c
+  md5: 1dbe95d264a62264192ee3db266142a2
+  depends:
+  - __osx >=11.0
+  - libcxx >=19
+  constrains:
+  - __osx >=11.0
+  license: Apache-2.0 OR MIT
+  purls: []
+  run_exports: {}
+  size: 17752624
+  timestamp: 1782834673896
 - conda: https://conda.anaconda.org/conda-forge/osx-arm64/wrapt-2.2.2-py313h0997733_0.conda
   sha256: 1b9bb35df4119949d36874e8e753d0f61a0f6f235deea43818e97af8bf6da768
   md5: 8446508b88050b1a78d5b575de80518b
@@ -9128,7 +9168,7 @@ packages:
     - zstd >=1.5.7,<1.6.0a0
   size: 433413
   timestamp: 1764777166076
-- pypi: .
+- pypi: ./
   name: so100-hackathon
   requires_python: '>=3.11'
 - pypi: https://files.pythonhosted.org/packages/37/ee/478689c69b3cb1ccabb2d52feac0c181f6cdf20b51a81df35344b1dab9a6/datafusion-52.3.0-cp310-abi3-manylinux_2_28_x86_64.whl
