@@ -69,6 +69,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_ID = "so-100"
 DATASET_NAME = "recordings"
 
+# The "export to LeRobot" button runs rerun-lerobot in an isolated `uvx` env (see
+# Recorder._run_export). >=0.2.0 re-encodes our JPEG camera frames to h264; the override
+# file keeps our newer rerun-sdk instead of the old one lerobot pins.
+LEROBOT_REQUIREMENT = "rerun-lerobot>=0.2.0"
+LEROBOT_OVERRIDE = REPO_ROOT / "pixi.lerobot-override.txt"
+
 # The web-viewer npm package is fetched once and served by the control server. Its
 # version must match the installed rerun-sdk (the wasm-bindgen glue is build-specific).
 WEB_VIEWER_VERSION = rr.__version__
@@ -158,11 +164,21 @@ class Recorder:
     back to proxy-only, then optimizes + registers the file.
     """
 
-    def __init__(self, proxy_uri: str, catalog_uri: str, recordings_dir: Path, source: CameraSource | ArmSession) -> None:
+    def __init__(
+        self,
+        proxy_uri: str,
+        catalog_uri: str,
+        recordings_dir: Path,
+        source: CameraSource | ArmSession,
+        lerobot_dir: Path,
+        fps: float,
+    ) -> None:
         self._proxy_uri = proxy_uri
         self._catalog_uri = catalog_uri
         self._recordings_dir = recordings_dir
         self._source = source
+        self._lerobot_dir = lerobot_dir
+        self._fps = fps
         self._lock = threading.Lock()
         self._recording = False
         self._counter = 0
@@ -170,13 +186,14 @@ class Recorder:
         self._rec: rr.RecordingStream | None = None  # current recording stream
         self._last: dict[str, object] = {}  # summary of the most recent recording
         self._catalog = None  # lazily created rr.catalog.CatalogClient
+        self._export: dict[str, object] = {}  # status of the most recent LeRobot export
 
     @property
     def running(self) -> bool:
         return self._recording
 
     def state(self) -> dict[str, object]:
-        return {"running": self._recording, "last": self._last}
+        return {"running": self._recording, "last": self._last, "export": self._export}
 
     def start(self) -> dict[str, object]:
         with self._lock:
@@ -284,6 +301,101 @@ class Recorder:
             print(f"[catalog]   ERROR: {missing} was registered but is NOT in the dataset on the server!", flush=True)
         return {"server_recordings": server_segments, "missing": missing}
 
+    # --- LeRobot export -------------------------------------------------------
+
+    def _lerobot_specs(self) -> dict[str, object]:
+        """Derive the ``rerun-lerobot`` column/video specs from the live data source.
+
+        ``action`` is the follower's commanded goal, ``state`` its measured position, and each
+        camera becomes a video stream. Raises ``RuntimeError`` if the source has no arms (e.g.
+        ``--fake``), since a LeRobot dataset needs an action + state.
+        """
+        source = self._source
+        # rerun-lerobot resolves fully-qualified, absolute entity paths (leading slash).
+        videos = [(f"cam{streamer.index}", f"/{streamer.entity_path}") for streamer in getattr(source, "streamers", [])]
+
+        warnings: list[str] = []
+        if not isinstance(source, ArmSession) or not source.arms:
+            raise RuntimeError("no arm data to export (running with --fake?); connect the SO-100 arms and record a take first")
+
+        follower = source.follower
+        if follower is not None:
+            state_arm = follower.name
+            action = f"/{follower.name}/goal:Scalars:scalars"
+        else:
+            # No teleop -> no /goal channel. Fall back to a (degenerate) position-only export.
+            state_arm = source.arms[0].name
+            action = f"/{state_arm}/position:Scalars:scalars"
+            warnings.append("no teleop follower: exporting position as both action and state")
+
+        return {
+            "action": action,
+            "state": f"/{state_arm}/position:Scalars:scalars",
+            "videos": videos,
+            "warnings": warnings,
+        }
+
+    def export(self) -> dict[str, object]:
+        """Kick off a background LeRobot conversion of the recorded ``.rrd`` files."""
+        with self._lock:
+            if self._recording:
+                self._export = {"status": "error", "error": "stop recording before exporting"}
+                return self._export
+            if self._export.get("status") == "running":
+                return self._export
+            try:
+                specs = self._lerobot_specs()
+            except RuntimeError as err:
+                self._export = {"status": "error", "error": str(err)}
+                return self._export
+            self._export = {"status": "running", "warnings": specs["warnings"]}
+            threading.Thread(target=self._run_export, args=(specs,), name="lerobot-export", daemon=True).start()
+            return self._export
+
+    def _run_export(self, specs: dict[str, object]) -> None:
+        out = self._lerobot_dir / f"{DATASET_NAME}-{time.strftime('%Y%m%d-%H%M%S')}"
+        # Run rerun-lerobot in an isolated uv tool env, NOT our pixi env: it drags in torch,
+        # opencv, wandb, ... (all core lerobot deps) and pins an older rerun-sdk. `uvx` keeps
+        # that heavy, conflicting dependency tree out of the app env; --overrides holds our
+        # newer rerun-sdk (LeRobot only uses rerun-sdk for its own optional viz, not export).
+        cmd = [
+            "uvx",
+            f"--from={LEROBOT_REQUIREMENT}",
+            f"--overrides={LEROBOT_OVERRIDE}",
+            "rerun-lerobot",
+            f"--rrd-dir={self._recordings_dir}",
+            f"--output={out}",
+            f"--dataset-name={DATASET_NAME}",
+            f"--repo-id={DATASET_NAME}",
+            f"--fps={int(round(self._fps))}",
+            "--index=time",
+            f"--action={specs['action']}",
+            f"--state={specs['state']}",
+        ]
+        for key, path in specs["videos"]:  # type: ignore[union-attr]
+            cmd += [f"--video={key}:{path}"]
+
+        print(f"[export]    {' '.join(cmd)}", flush=True)
+        summary: dict[str, object] = {"output": str(out), "warnings": specs["warnings"]}
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError as err:
+            summary["status"] = "error"
+            summary["error"] = f"could not run uvx: {err} (is `uv` installed? run `pixi install`)"
+        else:
+            if proc.returncode == 0:
+                summary["status"] = "done"
+                print(f"[export]    LeRobot dataset written to {out}", flush=True)
+            else:
+                output = (proc.stderr or proc.stdout).strip()
+                tail = output.splitlines()[-1] if output else "conversion failed"
+                summary["status"] = "error"
+                summary["error"] = tail
+                print(f"[export]    FAILED:\n{output}", flush=True)
+
+        with self._lock:
+            self._export = summary
+
 
 # Served at `/`. The viewer is bootstrapped from the `@rerun-io/web-viewer` package
 # (served from `/viewer/`), so we can drive it at runtime -- `viewer.open(url)` opens
@@ -316,8 +428,9 @@ PAGE_TEMPLATE = """<!doctype html>
       cursor: pointer;
       color: #fff;
     }
-    #start { background: #2e7d32; }
-    #stop  { background: #c62828; }
+    #start  { background: #2e7d32; }
+    #stop   { background: #c62828; }
+    #export { background: #1565c0; }
     button:disabled { opacity: 0.4; cursor: default; }
     #status { margin-left: auto; font-size: 0.9rem; opacity: 0.85; max-width: 55%; text-align: right; }
   </style>
@@ -328,6 +441,7 @@ PAGE_TEMPLATE = """<!doctype html>
     <div id="controls">
       <button id="start">start</button>
       <button id="stop">stop</button>
+      <button id="export">export to LeRobot</button>
       <span id="status">…</span>
     </div>
   </div>
@@ -338,6 +452,7 @@ PAGE_TEMPLATE = """<!doctype html>
     const statusEl = document.getElementById("status");
     const startBtn = document.getElementById("start");
     const stopBtn = document.getElementById("stop");
+    const exportBtn = document.getElementById("export");
 
     const viewer = new WebViewer();
     const viewerReady = viewer
@@ -347,12 +462,18 @@ PAGE_TEMPLATE = """<!doctype html>
 
     function render(state) {
       const running = !!(state && state.running);
-      startBtn.disabled = running;
+      const exp = (state && state.export) || {};
+      const exporting = exp.status === "running";
+      startBtn.disabled = running || exporting;
       stopBtn.disabled = !running;
+      exportBtn.disabled = running || exporting;
       const last = (state && state.last) || {};
       let msg = running ? "recording" : (last.status || "idle");
       if (last.file) msg += " · " + last.file.split("/").pop();
       if (last.error) msg += " · " + last.error;
+      if (exp.status === "running") msg += " · exporting to LeRobot…";
+      else if (exp.status === "done") msg += " · exported to " + exp.output.split("/").pop();
+      else if (exp.status === "error") msg += " · export error: " + exp.error;
       statusEl.textContent = msg;
     }
 
@@ -381,6 +502,14 @@ PAGE_TEMPLATE = """<!doctype html>
         for (const url of urls) {
           try { viewer.open(url); } catch (err) { console.error("viewer.open failed", url, err); }
         }
+      } catch (err) {
+        statusEl.textContent = "error: " + err;
+      }
+    });
+
+    exportBtn.addEventListener("click", async () => {
+      try {
+        render(await (await fetch("/export", { method: "POST" })).json());
       } catch (err) {
         statusEl.textContent = "error: " + err;
       }
@@ -443,6 +572,9 @@ def make_handler(
                 self._send_state(recorder.start())
             elif path == "/stop":
                 self._send_state(recorder.stop())
+            elif path == "/export":
+                recorder.export()
+                self._send_state(recorder.state())
             else:
                 self._send(404, b"not found", "text/plain")
 
@@ -450,9 +582,10 @@ def make_handler(
 
 
 def main(config: Config) -> None:
-    # The live-preview recording, used until the first take. Recorder.start() swaps in a
-    # fresh per-take recording (and redirects the source to it) on "start".
-    rec = rr.RecordingStream(APP_ID)
+    # The live-preview recording, used when not recording (until the first take, and between
+    # takes). Recorder.start() swaps in a fresh per-take recording (and redirects the source
+    # to it) on "start"; stop() drops back to this "live" recording.
+    rec = rr.RecordingStream(APP_ID, recording_id="live")
 
     # Web-viewer assets (served same-origin from the control server, see below).
     assets = ensure_web_viewer_assets(WEB_VIEWER_VERSION)
@@ -512,7 +645,7 @@ def main(config: Config) -> None:
             "/viewer/re_viewer.js": (assets["re_viewer.js"], "text/javascript"),
             "/viewer/re_viewer_bg.wasm": (assets["re_viewer_bg.wasm"], "application/wasm"),
         }
-        recorder = Recorder(proxy_uri, catalog_uri, config.recordings_dir, source)
+        recorder = Recorder(proxy_uri, catalog_uri, config.recordings_dir, source, config.lerobot_dir, config.fps)
         page = build_page(proxy_uri).encode("utf-8")
         httpd = ThreadingHTTPServer(("localhost", control_port), make_handler(recorder, page, asset_routes))
         page_url = f"http://localhost:{control_port}"
@@ -553,6 +686,9 @@ class Config:
 
     recordings_dir: Path = REPO_ROOT / "recordings"
     """Folder the ``.rrd`` files are written to (default: ``recordings/`` at repo root)."""
+
+    lerobot_dir: Path = REPO_ROOT / "lerobot"
+    """Folder LeRobot exports are written to (a timestamped subfolder per export)."""
 
     fake: bool = False
     """Capture only the connected camera(s), with no SO-100 arms (for testing without hardware)."""

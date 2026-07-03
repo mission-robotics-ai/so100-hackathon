@@ -125,6 +125,18 @@ catalog:
 pixi run dataset-collector   # then open http://localhost:8000
 ```
 
+Start/stop records takes. **export to LeRobot** converts every recorded `.rrd` into a
+[LeRobot](https://github.com/huggingface/lerobot) v3 dataset under `lerobot/` (arm goal ->
+`action`, arm position -> `observation.state`, each camera -> `observation.images.camN`,
+JPEG frames re-encoded to h264). It runs
+[`rerun-lerobot`](https://github.com/rerun-io/rerun-lerobot) in an isolated `uvx` env, so
+`lerobot`'s heavy tree (torch, opencv, ...) and its older `rerun-sdk` pin stay out of this
+env. The first export builds that env on demand; pre-build it with:
+
+```bash
+pixi run warm-lerobot
+```
+
 ## Development
 
 ```bash

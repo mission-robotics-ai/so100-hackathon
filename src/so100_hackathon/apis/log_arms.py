@@ -279,6 +279,16 @@ class ArmSession:
     def fps(self) -> float:
         return self.config.fps
 
+    @property
+    def leader(self) -> Arm | None:
+        """The teleop leader arm, or ``None`` if teleop isn't running."""
+        return self._leader
+
+    @property
+    def follower(self) -> Arm | None:
+        """The teleop follower arm, or ``None`` if teleop isn't running."""
+        return self._follower
+
     def start(self) -> None:
         """Arm the follower (if teleop) and start the camera + logging threads."""
         for streamer in self.streamers:

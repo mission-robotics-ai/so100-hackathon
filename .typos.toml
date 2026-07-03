@@ -4,3 +4,4 @@
 
 [default.extend-words]
 ser = "ser" # `ser` is the pyserial handle variable name
+mis = "mis" # "mis-map" (map incorrectly), not a typo of miss/mist

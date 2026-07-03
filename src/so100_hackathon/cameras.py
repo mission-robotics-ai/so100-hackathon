@@ -28,7 +28,7 @@ def _cameras_in_opencv_order() -> list[tuple[str, bool]] | None:
     which sort before the built-in's UUID).
     """
     try:
-        import AVFoundation as av
+        import AVFoundation as av  # pyrefly: ignore[missing-import]  # macOS-only, guarded by except
     except ImportError:
         return None
     # pyobjc loads ObjC names lazily; pyrefly can't see them.

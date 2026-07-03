@@ -7,3 +7,6 @@ __pycache__/
 
 # cached @rerun-io/web-viewer assets (fetched by dataset_collector.py)
 .web-viewer/
+
+# LeRobot exports (dataset_collector.py "export to LeRobot" button)
+/lerobot/
