@@ -7,6 +7,6 @@ python-interpreter-path = ".pixi/envs/dev/bin/python"
 # rerun-sdk installs a rerun_sdk.pth that adds a subdirectory to sys.path at
 # runtime. Pyrefly doesn't process .pth files, so add the subdirectory explicitly.
 site-package-path = [
-    ".pixi/envs/dev/lib/python3.14/site-packages",
-    ".pixi/envs/dev/lib/python3.14/site-packages/rerun_sdk",
+    ".pixi/envs/dev/lib/python3.13/site-packages",
+    ".pixi/envs/dev/lib/python3.13/site-packages/rerun_sdk",
 ]

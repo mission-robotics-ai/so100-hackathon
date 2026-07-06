@@ -70,10 +70,8 @@ APP_ID = "so-100"
 DATASET_NAME = "recordings"
 
 # The "export to LeRobot" button runs rerun-lerobot in an isolated `uvx` env (see
-# Recorder._run_export). >=0.2.0 re-encodes our JPEG camera frames to h264; the override
-# file keeps our newer rerun-sdk instead of the old one lerobot pins.
-LEROBOT_REQUIREMENT = "rerun-lerobot>=0.2.0"
-LEROBOT_OVERRIDE = REPO_ROOT / "pixi.lerobot-override.txt"
+# Recorder._run_export). >=0.2.0 re-encodes our JPEG camera frames to h264.
+LEROBOT_REQUIREMENT = "rerun-lerobot>=0.3.0"
 
 # The web-viewer npm package is fetched once and served by the control server. Its
 # version must match the installed rerun-sdk (the wasm-bindgen glue is build-specific).
@@ -355,13 +353,11 @@ class Recorder:
     def _run_export(self, specs: dict[str, object]) -> None:
         out = self._lerobot_dir / f"{DATASET_NAME}-{time.strftime('%Y%m%d-%H%M%S')}"
         # Run rerun-lerobot in an isolated uv tool env, NOT our pixi env: it drags in torch,
-        # opencv, wandb, ... (all core lerobot deps) and pins an older rerun-sdk. `uvx` keeps
-        # that heavy, conflicting dependency tree out of the app env; --overrides holds our
-        # newer rerun-sdk (LeRobot only uses rerun-sdk for its own optional viz, not export).
+        # opencv, wandb, ... (all core lerobot deps). `uvx` keeps that heavy dependency tree
+        # out of the app env.
         cmd = [
             "uvx",
             f"--from={LEROBOT_REQUIREMENT}",
-            f"--overrides={LEROBOT_OVERRIDE}",
             "rerun-lerobot",
             f"--rrd-dir={self._recordings_dir}",
             f"--output={out}",

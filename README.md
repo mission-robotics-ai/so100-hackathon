@@ -130,8 +130,8 @@ Start/stop records takes. **export to LeRobot** converts every recorded `.rrd` i
 `action`, arm position -> `observation.state`, each camera -> `observation.images.camN`,
 JPEG frames re-encoded to h264). It runs
 [`rerun-lerobot`](https://github.com/rerun-io/rerun-lerobot) in an isolated `uvx` env, so
-`lerobot`'s heavy tree (torch, opencv, ...) and its older `rerun-sdk` pin stay out of this
-env. The first export builds that env on demand; pre-build it with:
+`lerobot`'s heavy tree (torch, opencv, ...) stays out of this env. The first export builds
+that env on demand; pre-build it with:
 
 ```bash
 pixi run warm-lerobot

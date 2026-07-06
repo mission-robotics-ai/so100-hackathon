@@ -1,1 +1,0 @@
-rerun-sdk[datafusion]>=0.27

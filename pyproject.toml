@@ -19,7 +19,6 @@ platforms = ["osx-arm64", "linux-64"]
 
 [tool.pixi.dependencies]
 python = ">=3.11"
-rerun-sdk = "==0.33.1"
 numpy = "*"
 tyro = "*"
 pyserial = "*"
@@ -32,8 +31,10 @@ pyobjc-framework-avfoundation = "*"
 
 [tool.pixi.pypi-dependencies]
 so100_hackathon = { path = ".", editable = true }
+# rerun-sdk from PyPI: conda-forge lags behind (0.34 not packaged there yet).
+rerun-sdk = "==0.34.0"
 feetech-servo-sdk = ">=1.0.0"
-datafusion = ">=52,<53"
+datafusion = ">=53,<54"
 
 [tool.pixi.feature.dev.dependencies]
 ruff = "*"
@@ -75,12 +76,11 @@ default = { solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
 
 # rerun-lerobot can't live in the solve: it pulls in `lerobot` (torch, opencv, wandb, ... all
-# core deps), which also pins `rerun-sdk<0.27`, conflicting with our `rerun-sdk==0.33.1`. The
-# collector's "export to LeRobot" runs it in an isolated `uvx` env instead, so that heavy tree
-# never enters our env. This task just pre-warms that env (optional; the first export builds it
-# on demand). The override keeps our newer rerun-sdk (LeRobot only uses it for optional viz).
+# core deps). The collector's "export to LeRobot" runs it in an isolated `uvx` env instead, so
+# that heavy tree never enters our env. This task just pre-warms that env (optional; the first
+# export builds it on demand).
 [tool.pixi.tasks.warm-lerobot]
-cmd = "uvx --from 'rerun-lerobot>=0.2.0' --overrides pixi.lerobot-override.txt rerun-lerobot --help"
+cmd = "uvx --from 'rerun-lerobot>=0.3.0' rerun-lerobot --help"
 description = "Pre-build the isolated uvx env for the dataset collector's 'export to LeRobot' button"
 
 [tool.pixi.tasks.dataset-collector]
