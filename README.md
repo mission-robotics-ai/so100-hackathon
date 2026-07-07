@@ -129,11 +129,12 @@ course's Deploy page.
 ## Development
 
 ```bash
-pixi run -e dev lint
-pixi run -e dev typecheck
-pixi run -e dev deadcode
+pixi run -e dev py-fmt        # autofix lints + format (ruff) — the only task that edits files
+pixi run -e dev py-fmt-check  # check formatting + lints (ruff) — CI runs this
+pixi run -e dev py-lint       # typecheck (pyrefly) — CI runs this
+pixi run -e dev py-deadcode   # find dead code (vulture)
 ```
 
-Package layout follows the examples-monorepo conventions: Tyro configs + `main()` live in
-`src/so100_hackathon/apis/`, `tools/apps/*.py` are thin shims, beartype instruments the
-package when `PIXI_DEV_MODE=1` (dev env).
+Package layout: Tyro configs + `main()` live in `src/so100_hackathon/apis/`,
+`tools/apps/*.py` are thin shims, and beartype instruments the package when
+`PIXI_DEV_MODE=1` (dev env).

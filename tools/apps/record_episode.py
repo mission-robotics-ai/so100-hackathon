@@ -29,6 +29,7 @@ import tyro
 
 from so100_hackathon.apis.log_arms import ArmSession, LogArmsConfig
 from so100_hackathon.cameras import CameraSource
+from so100_hackathon.console import enable_pretty_tracebacks, info, success, warn
 from so100_hackathon.rerun_config import LiveViewerConfig
 from so100_hackathon.takes import (
     SEGMENT_TAGS,
@@ -105,7 +106,7 @@ def main(config: Config) -> None:
 
     proxy_uri = f"rerun+http://localhost:{config.grpc_port}/proxy" if _port_open(config.grpc_port) else None
     if proxy_uri is not None:
-        print(f"live view:  streaming to {proxy_uri} (so100-server proxy)", flush=True)
+        info(f"live view:  streaming to {proxy_uri} (so100-server proxy)")
 
     rec = begin_take(path, episode=episode, dataset=sanitize_name(config.dataset), task=config.task, proxy_uri=proxy_uri)
     source: ArmSession | CameraSource = (
@@ -114,14 +115,14 @@ def main(config: Config) -> None:
     source.start()
     source.begin(rec)
 
-    print(f"recording:  {path}", flush=True)
+    info(f"recording:  {path}")
     try:
         if config.seconds is not None:
             time.sleep(config.seconds)
         else:
             input("recording... press Enter to stop\n")
     except KeyboardInterrupt:
-        print("\nstopping", flush=True)
+        info("\nstopping")
     finally:
         finish_take(rec, dataset=sanitize_name(config.dataset), task=config.task, tag=config.tag, proxy_uri=proxy_uri)
         source.close()
@@ -134,12 +135,13 @@ def main(config: Config) -> None:
     if _port_open(config.catalog_port):
         catalog_uri = f"rerun+http://localhost:{config.catalog_port}"
         registration = register_rrd(catalog_uri, sanitize_name(config.dataset), path)
-        print(f"registered: dataset '{registration['dataset']}', segments {registration['segment_ids']}", flush=True)
+        success(f"registered: dataset '{registration['dataset']}', segments {registration['segment_ids']}")
         if blueprint_file is not None and register_blueprint(catalog_uri, sanitize_name(config.dataset), blueprint_file):
-            print("blueprint:  registered as the dataset's default", flush=True)
+            success("blueprint:  registered as the dataset's default")
     else:
-        print(f"saved:      {path} (no catalog server on port {config.catalog_port}; the next `pixi run so100-server` start registers it)")
+        warn(f"saved:      {path} (no catalog server on port {config.catalog_port}; the next `pixi run so100-server` start registers it)")
 
 
 if __name__ == "__main__":
+    enable_pretty_tracebacks()
     main(tyro.cli(Config))

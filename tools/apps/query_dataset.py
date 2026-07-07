@@ -19,9 +19,8 @@ from typing import Any
 import pandas as pd
 import tyro
 from datafusion import col, lit
-from rich import box
-from rich.console import Console
-from rich.table import Table
+
+from so100_hackathon.console import console, enable_pretty_tracebacks, info, note, simple_table
 
 os.environ.setdefault("RERUN_INSECURE_SKIP_HOST_CHECK", "1")
 
@@ -48,13 +47,13 @@ def _flatten(value: Any) -> Any:
 
 def _print_frame(df: pd.DataFrame, *, max_cell: int | None = None) -> None:
     """Render a DataFrame as a terminal-width-aware table (pandas' to_string ignores it)."""
-    table = Table(box=box.SIMPLE, header_style="bold")
+    table = simple_table()
     for column in df.columns:
         table.add_column(str(column), overflow="fold")
     for row in df.itertuples(index=False):
         cells = (str(value) for value in row)
         table.add_row(*(cell[:max_cell] + "…" if max_cell and len(cell) > max_cell else cell for cell in cells))
-    Console().print(table)
+    console.print(table)
 
 
 def _human_size(size_bytes: float) -> str:
@@ -69,13 +68,16 @@ def _human_size(size_bytes: float) -> str:
 def list_datasets(client: rr.catalog.CatalogClient) -> None:
     names = sorted(client.dataset_names())
     if not names:
-        print("no datasets yet -- record one first (Collect page or `pixi run record-episode`)")
+        note("no datasets yet -- record one first (Collect page or `pixi run record-episode`)")
         return
-    print(f"{len(names)} dataset(s) in the catalog:\n")
+    table = simple_table(title=f"{len(names)} dataset(s) in the catalog")
+    table.add_column("dataset")
+    table.add_column("episodes", justify="right")
     for name in names:
         count = len(client.get_dataset(name=name).segment_ids())
-        print(f"  {name:30s} {count} episode(s)")
-    print("\ndetails: pixi run query-dataset -- --dataset <name>")
+        table.add_row(name, str(count))
+    console.print(table)
+    note("details: pixi run query-dataset -- --dataset <name>")
 
 
 def show_segment_table(dataset: rr.catalog.DatasetEntry, tag: str | None) -> pd.DataFrame:
@@ -84,7 +86,7 @@ def show_segment_table(dataset: rr.catalog.DatasetEntry, tag: str | None) -> pd.
         table = table.filter(col("property:episode:tag")[0] == lit(tag))
     df = table.to_pandas()
     if df.empty:
-        print(f"no episodes{f' tagged {tag!r}' if tag else ''} in dataset '{dataset.name}'")
+        note(f"no episodes{f' tagged {tag!r}' if tag else ''} in dataset '{dataset.name}'")
         return df
 
     view = df[[column for column in SEGMENT_COLUMNS if column in df.columns]].rename(columns=SEGMENT_COLUMNS)
@@ -97,7 +99,7 @@ def show_segment_table(dataset: rr.catalog.DatasetEntry, tag: str | None) -> pd.
     if "size" in view.columns:
         view["size"] = view["size"].map(_human_size)
     view = view.sort_values("episode").reset_index(drop=True)
-    print(f"dataset '{dataset.name}'{f', tag {tag!r}' if tag else ''}: {len(view)} episode(s)")
+    info(f"dataset '{dataset.name}'{f', tag {tag!r}' if tag else ''}: {len(view)} episode(s)")
     _print_frame(view)
     return view
 
@@ -121,11 +123,11 @@ def show_entity_series(dataset: rr.catalog.DatasetEntry, *, episode: str | None,
         raise SystemExit(f"entity '{entity}' has no data here; entities in this dataset: {entities}")
 
     scope = f"episode '{episode}'" if episode else (f"episodes tagged {tag!r}" if tag else "all episodes")
-    print(f"'{entity}' across {scope}: {len(df)} rows")
+    info(f"'{entity}' across {scope}: {len(df)} rows")
     _print_frame(df[data_columns].head(10), max_cell=48)
     numeric = df[data_columns].select_dtypes("number")
     if not numeric.empty:
-        print("summary:")
+        note("summary:")
         _print_frame(numeric.describe().rename_axis("stat").reset_index())
 
 
@@ -160,6 +162,7 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
+    enable_pretty_tracebacks()
     try:
         main(tyro.cli(Config))
     except ConnectionError as error:

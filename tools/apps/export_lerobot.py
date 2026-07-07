@@ -1,6 +1,6 @@
 """Export a recorded catalog dataset to LeRobot v3 format (the Train step).
 
-Runs in the *default* environment (rerun-sdk 0.33.1) and stages episodes to a temp
+Runs in the *default* environment (rerun-sdk 0.34.1) and stages episodes to a temp
 directory, then spawns ``tools/apps/_export_lerobot_writer.py`` inside the isolated
 ``export`` environment (which has ``lerobot`` -- its rerun-sdk pin conflicts with ours,
 so the two never share an interpreter)::
@@ -26,12 +26,14 @@ from typing import Any
 
 import numpy as np
 import tyro
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 os.environ.setdefault("RERUN_INSECURE_SKIP_HOST_CHECK", "1")
 
 import rerun as rr  # noqa: E402 - the env var above must be set before use
 
 from so100_hackathon.calibration import DEFAULT_MOTOR_NAMES  # noqa: E402
+from so100_hackathon.console import console, enable_pretty_tracebacks, info, note, success, warn  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -150,7 +152,7 @@ def main(config: Config) -> None:
         if not config.push:
             raise SystemExit(f"{output} already exists -- remove it first to re-export")
         # Already exported: just push the existing local dataset.
-        print(f"{output} already exists -- pushing it to the Hub")
+        info(f"{output} already exists -- pushing it to the Hub")
         command = ["pixi", "run", "--environment", "export", "python", str(writer), "--root", str(config.root), "--repo-id", config.repo_id, "--push"]
         raise SystemExit(subprocess.run(command, cwd=REPO_ROOT).returncode)
 
@@ -160,18 +162,28 @@ def main(config: Config) -> None:
     if not episodes:
         raise SystemExit(f"no episodes{f' tagged {config.tag!r}' if config.tag else ''} in dataset '{config.dataset}'")
     action, state, cameras = discover_entities(dataset)
-    print(f"exporting {len(episodes)} episode(s): action={action} state={state} cameras={cameras or 'none'}")
+    info(f"exporting {len(episodes)} episode(s): action={action} state={state} cameras={cameras or 'none'}")
 
     with tempfile.TemporaryDirectory(prefix="lerobot-stage-") as stage:
         stage_dir = Path(stage)
         staged = []
-        for episode in episodes:
-            frames = stage_episode(dataset, episode, action, state, cameras, stage_dir / episode.segment_id)
-            if frames == 0:
-                print(f"  {episode.name}: no complete frames, skipped")
-                continue
-            print(f"  {episode.name}: {frames} frames")
-            staged.append({"dir": episode.segment_id, "name": episode.name, "task": episode.task})
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("staging episodes", total=len(episodes))
+            for episode in episodes:
+                progress.update(task, description=f"staging {episode.name}")
+                frames = stage_episode(dataset, episode, action, state, cameras, stage_dir / episode.segment_id)
+                if frames == 0:
+                    warn(f"  {episode.name}: no complete frames, skipped")
+                else:
+                    staged.append({"dir": episode.segment_id, "name": episode.name, "task": episode.task})
+                progress.advance(task)
         if not staged:
             raise SystemExit("nothing to export")
 
@@ -197,12 +209,13 @@ def main(config: Config) -> None:
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
-    print(f"\ndone: {output}")
+    success(f"\ndone: {output}")
     if not config.push:
-        print(f"push it later with: pixi run export-lerobot -- --dataset {config.dataset} --repo-id {config.repo_id} --push")
+        note(f"push it later with: pixi run export-lerobot -- --dataset {config.dataset} --repo-id {config.repo_id} --push")
 
 
 if __name__ == "__main__":
+    enable_pretty_tracebacks()
     try:
         main(tyro.cli(Config))
     except ConnectionError as error:

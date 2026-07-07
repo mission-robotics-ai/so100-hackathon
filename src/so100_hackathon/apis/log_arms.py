@@ -27,6 +27,7 @@ import rerun.blueprint as rrb
 from so100_hackathon.blueprint import create_blueprint
 from so100_hackathon.calibration import MotorCalibration, fallback_calibration, load_arm_kind, load_arm_ranges, load_calibration
 from so100_hackathon.cameras import CameraStreamer, FrameSink, detect_camera_indices
+from so100_hackathon.console import error, info, note, success, warn
 from so100_hackathon.feetech import FeetechBus, MotorTelemetry, detect_arm_ports, usb_id_from_port
 from so100_hackathon.rerun_config import LiveViewerConfig
 from so100_hackathon.setup_phases import announce_phase
@@ -127,11 +128,11 @@ def _open_arms(config: LogArmsConfig, rec: rr.RecordingStream) -> list[Arm]:
         try:
             calibration = load_calibration(calibration_path)
             calibrated = True
-            print(f"{name}: {port} (calibration {calibration_path})", flush=True)
+            info(f"{name}: {port} (calibration {calibration_path})")
         except (FileNotFoundError, KeyError):  # missing, or a kind-only stub
             calibration = fallback_calibration()
             calibrated = False
-            print(f"{name}: {port} (no calibration in {calibration_path}, using raw-centered degrees)", flush=True)
+            warn(f"{name}: {port} (no calibration in {calibration_path}, using raw-centered degrees)")
         if config.leader is not None:
             is_leader: bool | None = config.leader in (usb_id, name)
         else:
@@ -157,10 +158,7 @@ def _open_arms(config: LogArmsConfig, rec: rr.RecordingStream) -> list[Arm]:
         elif len(unknown) == 2:
             resolved[0].is_leader = True
             resolved[1].is_leader = False
-            print(
-                f"GUESSING {resolved[0].name} is the leader — pass --leader <usb_id> if wrong, or calibrate with --leader to make it permanent",
-                flush=True,
-            )
+            warn(f"GUESSING {resolved[0].name} is the leader — pass --leader <usb_id> if wrong, or calibrate with --leader to make it permanent")
     resolved.sort(key=lambda arm: not arm.is_leader)  # leader first -> leftmost
     # Entity names default to the USB serial id, but once roles are known plain
     # "leader"/"follower" reads much better in the viewer. Keep explicit --names, and
@@ -171,7 +169,7 @@ def _open_arms(config: LogArmsConfig, rec: rr.RecordingStream) -> list[Arm]:
             for arm, role in zip(resolved, roles, strict=True):
                 arm.name = role
     for arm in resolved:
-        print(f"{arm.name}: {'LEADER' if arm.is_leader else 'follower'} on {arm.port}", flush=True)
+        info(f"{arm.name}: {'LEADER' if arm.is_leader else 'follower'} on {arm.port}")
 
     arms: list[Arm] = []
     for i, res in enumerate(resolved):
@@ -282,12 +280,12 @@ class ArmSession:
             ):
                 self._leader, self._follower = leader, follower
             else:
-                print("teleop requested but needs two calibrated arms (with a follower range) — running WITHOUT teleop", flush=True)
+                warn("teleop requested but needs two calibrated arms (with a follower range) — running WITHOUT teleop")
 
         teleop_note = ""
         if self._leader is not None and self._follower is not None:
             teleop_note = f", teleop {self._follower.name} <- {self._leader.name}"
-        print(f"arm session: {len(self.arms)} arm(s) + {len(self.streamers)} camera(s){teleop_note}", flush=True)
+        info(f"arm session: {len(self.arms)} arm(s) + {len(self.streamers)} camera(s){teleop_note}")
 
     @property
     def fps(self) -> float:
@@ -311,7 +309,7 @@ class ArmSession:
             self._follower.bus.set_torque(False)
             self._follower.bus.configure_follower_control()
             self._follower.bus.set_torque(True)
-            print(f"teleop: {self._follower.name} torque ON, mirroring {self._leader.name}", flush=True)
+            success(f"teleop: {self._follower.name} torque ON, mirroring {self._leader.name}")
         self._thread = threading.Thread(target=self._run, name="arm-session", daemon=True)
         self._thread.start()
 
@@ -361,15 +359,15 @@ class ArmSession:
                         # A servo power blip resets Torque_Enable, and goal writes are
                         # fire-and-forget — re-arm, or teleop resumes silently limp.
                         arm.bus.set_torque(True)
-                        print(f"{arm.name}: recovered — torque re-armed", flush=True)
-                except RuntimeError as error:
+                        success(f"{arm.name}: recovered — torque re-armed")
+                except RuntimeError as err:
                     arm.errors += 1
                     if arm.errors == 1 or arm.errors % self._reconnect_every == 0:
-                        print(f"{arm.name}: bus read failed ({arm.errors}): {error}", flush=True)
+                        warn(f"{arm.name}: bus read failed ({arm.errors}): {err}")
                     if arm.errors % self._reconnect_every == 0:
                         try:
                             arm.bus.reconnect()
-                            print(f"{arm.name}: reconnected", flush=True)
+                            success(f"{arm.name}: reconnected")
                         except (RuntimeError, OSError):
                             pass  # device still gone; keep retrying
 
@@ -381,10 +379,10 @@ class ArmSession:
                     try:
                         _drive_follower(self._leader, self._follower, rec=rec, blend=blend, max_step=self.config.max_relative_target)
                         self._write_errors = 0
-                    except RuntimeError as error:
+                    except RuntimeError as err:
                         self._write_errors += 1
                         if self._write_errors == 1 or self._write_errors % self._reconnect_every == 0:
-                            print(f"{self._follower.name}: goal write failed ({self._write_errors}): {error}", flush=True)
+                            warn(f"{self._follower.name}: goal write failed ({self._write_errors}): {err}")
                 else:
                     self._teleop_t0 = None  # a bus dropped: restart the ramp on resume
 
@@ -401,9 +399,9 @@ class ArmSession:
         if self._follower is not None:
             try:
                 self._follower.bus.set_torque(False)
-                print(f"{self._follower.name}: torque released", flush=True)
-            except (RuntimeError, OSError) as error:
-                print(f"{self._follower.name}: FAILED to release torque ({error}) — power-cycle the arm to free it", flush=True)
+                success(f"{self._follower.name}: torque released")
+            except (RuntimeError, OSError) as err:
+                error(f"{self._follower.name}: FAILED to release torque ({err}) — power-cycle the arm to free it")
         for arm in self.arms:
             arm.bus.close()
 
@@ -461,7 +459,7 @@ def main(config: LogArmsConfig) -> None:
     reconnect_every = max(1, int(config.fps))  # attempt a reconnect roughly once a second
     write_errors = 0
     teleop_t0: float | None = None  # ramp anchor; None whenever driving is paused, so resuming glides again
-    print(f"streaming {len(arms)} arm(s) + {len(streamers)} camera(s) at target {config.fps:.0f} Hz (Ctrl-C to stop)...", flush=True)
+    info(f"streaming {len(arms)} arm(s) + {len(streamers)} camera(s) at target {config.fps:.0f} Hz (Ctrl-C to stop)...")
     announce_phase("running")  # tells the data server (and thus the course site) that the feed is live
     try:
         if leader_arm is not None and follower_arm is not None:
@@ -470,7 +468,7 @@ def main(config: LogArmsConfig) -> None:
             follower_arm.bus.set_torque(False)
             follower_arm.bus.configure_follower_control()
             follower_arm.bus.set_torque(True)
-            print(f"teleop: {follower_arm.name} torque ON, mirroring {leader_arm.name} — Ctrl-C releases it", flush=True)
+            success(f"teleop: {follower_arm.name} torque ON, mirroring {leader_arm.name} — Ctrl-C releases it")
         while True:
             loop_start = time.monotonic()
             rec.set_time("time", timestamp=time.time())
@@ -485,17 +483,17 @@ def main(config: LogArmsConfig) -> None:
                         # A servo power blip resets Torque_Enable, and goal writes are
                         # fire-and-forget — re-arm, or teleop resumes silently limp.
                         arm.bus.set_torque(True)
-                        print(f"{arm.name}: recovered — torque re-armed", flush=True)
-                except RuntimeError as error:
+                        success(f"{arm.name}: recovered — torque re-armed")
+                except RuntimeError as err:
                     arm.errors += 1
                     if arm.errors == 1 or arm.errors % reconnect_every == 0:
-                        print(f"{arm.name}: bus read failed ({arm.errors}): {error}", flush=True)
+                        warn(f"{arm.name}: bus read failed ({arm.errors}): {err}")
                     if arm.errors >= max_errors:
                         raise
                     if arm.errors % reconnect_every == 0:
                         try:
                             arm.bus.reconnect()
-                            print(f"{arm.name}: reconnected", flush=True)
+                            success(f"{arm.name}: reconnected")
                         except (RuntimeError, OSError):
                             pass  # device still gone; keep retrying
 
@@ -509,10 +507,10 @@ def main(config: LogArmsConfig) -> None:
                     try:
                         _drive_follower(leader_arm, follower_arm, rec=rec, blend=blend, max_step=config.max_relative_target)
                         write_errors = 0
-                    except RuntimeError as error:
+                    except RuntimeError as err:
                         write_errors += 1
                         if write_errors == 1 or write_errors % reconnect_every == 0:
-                            print(f"{follower_arm.name}: goal write failed ({write_errors}): {error}", flush=True)
+                            warn(f"{follower_arm.name}: goal write failed ({write_errors}): {err}")
                 else:
                     # Driving paused (a bus dropped): restart the ramp on resume, so the
                     # follower glides to wherever the leader moved meanwhile, not snaps.
@@ -520,7 +518,7 @@ def main(config: LogArmsConfig) -> None:
 
             frames += 1
             if loop_start - rate_t0 >= 5.0:
-                print(f"logging at {frames / (loop_start - rate_t0):.1f} Hz", flush=True)
+                note(f"logging at {frames / (loop_start - rate_t0):.1f} Hz")
                 frames = 0
                 rate_t0 = loop_start
             if deadline is not None and loop_start >= deadline:
@@ -529,15 +527,15 @@ def main(config: LogArmsConfig) -> None:
             if sleep_s > 0.0:
                 time.sleep(sleep_s)
     except KeyboardInterrupt:
-        print("\nstopped.", flush=True)
+        info("\nstopped.")
     finally:
         for streamer in streamers:
             streamer.stop()
         if follower_arm is not None:
             try:
                 follower_arm.bus.set_torque(False)
-                print(f"{follower_arm.name}: torque released", flush=True)
-            except (RuntimeError, OSError) as error:
-                print(f"{follower_arm.name}: FAILED to release torque ({error}) — power-cycle the arm to free it", flush=True)
+                success(f"{follower_arm.name}: torque released")
+            except (RuntimeError, OSError) as err:
+                error(f"{follower_arm.name}: FAILED to release torque ({err}) — power-cycle the arm to free it")
         for arm in arms:
             arm.bus.close()

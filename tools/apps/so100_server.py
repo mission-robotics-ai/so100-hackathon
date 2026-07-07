@@ -78,10 +78,15 @@ from urllib.parse import parse_qs, urlparse
 
 import rerun as rr
 import tyro
+from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from so100_hackathon.apis.log_arms import ArmSession, LogArmsConfig
 from so100_hackathon.calibration import load_arm_kind
 from so100_hackathon.cameras import CameraSource, RecordingFanout
+from so100_hackathon.console import console, error, info, note, simple_table, success
 from so100_hackathon.rerun_config import LiveViewerConfig
 from so100_hackathon.setup_phases import PHASE_PREFIX
 from so100_hackathon.takes import (
@@ -300,7 +305,7 @@ class Recorder:
             self._recording_id = None
         if source is not None:
             source.close()
-            print("[arms]      disconnected (serial ports released)", flush=True)
+            info("[arms]      disconnected (serial ports released)")
         if live is not None:
             live.disconnect()
         if proxy is not None:
@@ -322,7 +327,7 @@ class Recorder:
             if not self._live_paused:
                 self._source.set_output(RecordingFanout())  # zero sinks: frames are dropped
                 self._live_paused = True
-                print("[live]      paused (frames dropped, stream id kept)", flush=True)
+                info("[live]      paused (frames dropped, stream id kept)")
             return self.state()
 
     def resume_live(self) -> dict[str, object]:
@@ -333,7 +338,7 @@ class Recorder:
             if self._live_paused:
                 self._source.set_output(self._live)
                 self._live_paused = False
-                print("[live]      resumed (same recording continues)", flush=True)
+                info("[live]      resumed (same recording continues)")
             return self.state()
 
     # --- takes ----------------------------------------------------------------
@@ -365,7 +370,7 @@ class Recorder:
             self._recording = True
             self._last = {"file": str(path), "episode": episode, "stem": path.stem, "status": "recording"}
             self._last_take = {"dataset": sanitize_name(dataset), "stem": path.stem, "task": task}
-            print(f"[recording] started {path.stem} -> {path}", flush=True)
+            info(f"[recording] started {path.stem} -> {path}")
             return self.state()
 
     def stop(self, *, tag: str) -> dict[str, object]:
@@ -386,7 +391,7 @@ class Recorder:
         assert take is not None and path is not None  # set by start() before _recording flips true
         # proxy_uri=None: stamp the final properties, flush, and close the file.
         finish_take(take, dataset=path.parent.name, task=task, tag=tag, proxy_uri=None)
-        print(f"[recording] stopped -> {path} (tag: {tag})", flush=True)
+        info(f"[recording] stopped -> {path} (tag: {tag})")
 
         summary: dict[str, object] = {"file": str(path), "episode": episode, "stem": path.stem, "status": "stopped", "tag": tag}
         try:
@@ -394,20 +399,20 @@ class Recorder:
             registration = register_rrd(self._catalog_uri, path.parent.name, path)
             summary["registration"] = registration
             summary["status"] = "registered"
-            print(f"[catalog]   registered {path} in dataset '{path.parent.name}' (segments: {registration['segment_ids']})", flush=True)
+            success(f"[catalog]   registered {path} in dataset '{path.parent.name}' (segments: {registration['segment_ids']})")
             # Give the dataset the same blueprint as the live stream, so episodes opened
             # from the catalog don't fall back to the viewer's heuristic layout. One
             # blueprint per dataset: no-op once it exists (users may customize it).
             if isinstance(source, ArmSession):
                 blueprint_file = save_dataset_blueprint(self._recordings_dir, path.parent.name, source.blueprint())
                 if register_blueprint(self._catalog_uri, path.parent.name, blueprint_file):
-                    print(f"[catalog]   default blueprint set for dataset '{path.parent.name}'", flush=True)
+                    success(f"[catalog]   default blueprint set for dataset '{path.parent.name}'")
         except Exception as err:  # noqa: BLE001 - surface any failure to the UI
             summary["status"] = "register_failed"
             summary["error"] = f"{type(err).__name__}: {err}"
             with self._lock:
                 self._last_take = None  # nothing in the catalog to update
-            print(f"[catalog]   registration FAILED for {path}: {summary['error']}", flush=True)
+            error(f"[catalog]   registration FAILED for {path}: {summary['error']}")
 
         with self._lock:
             self._last = summary
@@ -441,14 +446,14 @@ class Recorder:
             with self._lock:
                 if self._last_take is not None:
                     self._last_take["task"] = task  # so stop() re-stamps the edited task, not the original
-            print(f"[recording] updated {name}/{stem} mid-take (task: {task!r}, tag: {tag!r})", flush=True)
+            info(f"[recording] updated {name}/{stem} mid-take (task: {task!r}, tag: {tag!r})")
         else:
             if not (self._recordings_dir / name / f"{stem}.rrd").exists():
                 raise RuntimeError(f"no episode '{stem}' in dataset '{name}'")
             path = edits_path(self._recordings_dir, name, stem)
             write_edits(path, recording_id=f"{name}-{stem}", task=task, tag=tag)
             register_edits(self._catalog_uri, name, [path])
-            print(f"[catalog]   updated {name}/{stem} (task: {task!r}, tag: {tag!r})", flush=True)
+            info(f"[catalog]   updated {name}/{stem} (task: {task!r}, tag: {tag!r})")
         with self._lock:
             if self._last.get("episode") == stem:
                 self._last = {**self._last, "tag": tag}
@@ -639,7 +644,7 @@ class SetupRunner:
             self._arm = arm
             self._recording_id = recording_id
             self._phase = None
-        print(f"[setup]     started {self._tool}{f' ({arm})' if arm else ''} (pid {proc.pid})", flush=True)
+        info(f"[setup]     started {self._tool}{f' ({arm})' if arm else ''} (pid {proc.pid})")
         threading.Thread(target=self._watch, args=(proc,), daemon=True).start()
 
     def _watch(self, proc: subprocess.Popen[str]) -> None:
@@ -674,9 +679,9 @@ class SetupRunner:
         if proxy is not None:
             proxy.terminate()  # frees everything this run streamed
         if returncode != 0 and not stopped:
-            print(f"[setup]     {self._tool} FAILED (exit {returncode}):\n" + "\n".join(f"  | {line}" for line in tail[-10:]), flush=True)
+            error(f"[setup]     {self._tool} FAILED (exit {returncode}):\n" + "\n".join(f"  | {line}" for line in tail[-10:]))
         else:
-            print(f"[setup]     {self._tool} finished", flush=True)
+            success(f"[setup]     {self._tool} finished")
 
     def next(self) -> None:
         """Press Enter in the running tool (advance calibrate's middle/sweep steps)."""
@@ -852,28 +857,36 @@ def main(config: Config) -> None:
     #    to. The setup tools use their own per-run throwaway proxies (see SetupRunner).
     proxy_uri = f"rerun+http://localhost:{config.grpc_port}/proxy"
     proxy_proc = spawn_proxy(config.grpc_port)
-    print(f"gRPC proxy server:  {proxy_uri}")
 
     # 2) In-process catalog server, pre-loaded with everything already on disk:
     #    each recordings/<dataset>/ folder becomes a catalog dataset. This is what makes
     #    the server safe to shut down -- the next start re-registers it all.
     datasets = scan_recordings(config.recordings_dir)
-    for name, files in datasets.items():
-        print(f"[scan]      dataset '{name}': {len(files)} recording(s) from {config.recordings_dir / name}", flush=True)
     catalog_uri = f"rerun+http://localhost:{config.catalog_port}"
     # dict is invariant in its value type, hence the cast to Server's accepted union.
     server_datasets = cast("dict[str, str | os.PathLike[str] | Sequence[str | os.PathLike[str]]] | None", datasets or None)
     catalog_server = rr.server.Server(port=config.catalog_port, datasets=server_datasets)
-    print(f"Catalog server:     {catalog_uri}")
-    # Re-apply saved metadata edits (recordings/<dataset>/edits/*.rrd) as `edits` layers.
-    for name, edit_files in scan_edits(config.recordings_dir).items():
+    # Re-apply saved metadata edits (recordings/<dataset>/edits/*.rrd) as `edits` layers,
+    # and saved default blueprints (without one the viewer falls back to a heuristic layout).
+    edits = scan_edits(config.recordings_dir)
+    for name, edit_files in edits.items():
         register_edits(catalog_uri, name, edit_files)
-        print(f"[scan]      dataset '{name}': {len(edit_files)} metadata edit(s) re-applied", flush=True)
-    # Re-apply saved default blueprints -- without one, the viewer opens catalog
-    # episodes with its heuristic layout.
-    for name, blueprint_file in scan_blueprints(config.recordings_dir).items():
+    blueprints = scan_blueprints(config.recordings_dir)
+    for name, blueprint_file in blueprints.items():
         register_blueprint(catalog_uri, name, blueprint_file)
-        print(f"[scan]      dataset '{name}': default blueprint re-applied", flush=True)
+
+    # One table summarizing what the catalog re-loaded from recordings/ on startup.
+    if datasets:
+        scan_table = simple_table(title=f"catalog re-loaded from {config.recordings_dir}")
+        scan_table.add_column("dataset")
+        scan_table.add_column("recordings", justify="right")
+        scan_table.add_column("edits", justify="right")
+        scan_table.add_column("blueprint", justify="center")
+        for name in sorted(datasets):
+            scan_table.add_row(name, str(len(datasets[name])), str(len(edits.get(name, []))), "✓" if name in blueprints else "-")
+        console.print(scan_table)
+    else:
+        note(f"no recordings yet in {config.recordings_dir}")
 
     recorder = Recorder(catalog_uri, config.recordings_dir, arm_fps=config.fps)
     setup = SetupRunner(calibration_dir=REPO_ROOT / "calibrations")
@@ -885,12 +898,20 @@ def main(config: Config) -> None:
         # 3) Control server -- the JSON API the course site (and curl) talks to.
         handler = make_handler(recorder, setup, lambda: rr.catalog.CatalogClient(catalog_uri), config.recordings_dir)
         httpd = ThreadingHTTPServer(("localhost", config.control_port), handler)
-        print(f"Control API:        http://localhost:{config.control_port}")
-        print()
-        print("Leave this running. Follow the course (`pixi run learn`) or record from the CLI (`pixi run record-episode`).")
+        control_uri = f"http://localhost:{config.control_port}"
+
+        # Endpoints banner: the three long-lived ports this server exposes.
+        endpoints = Table.grid(padding=(0, 3))
+        endpoints.add_column(style="bold cyan")
+        endpoints.add_column()
+        endpoints.add_row("gRPC proxy", proxy_uri)
+        endpoints.add_row("catalog", catalog_uri)
+        endpoints.add_row("control API", control_uri)
+        hint = Text("Leave this running. Follow the course (pixi run learn) or record from the CLI (pixi run record-episode).", style="dim")
+        console.print(Panel(Group(endpoints, Text(), hint), title="SO-100 server", border_style="green", expand=False))
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nshutting down")
+        info("\nshutting down")
     finally:
         setup.close()
         recorder.close()

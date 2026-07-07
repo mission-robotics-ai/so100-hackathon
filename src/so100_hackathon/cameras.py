@@ -13,6 +13,8 @@ from typing import Any
 import cv2
 import rerun as rr
 
+from so100_hackathon.console import error, info, warn
+
 # The Mac's internal webcam is never a recording camera on this rig. The device type is
 # authoritative ("...BuiltIn..." on macOS); names are a fallback for older reporting.
 BUILTIN_NAME_HINTS = ("facetime", "built-in", "macbook")
@@ -63,7 +65,7 @@ def detect_camera_indices(max_index: int = 4, *, include_builtin: bool = False) 
     for index in found:
         name, builtin = cameras[index] if index < len(cameras) else ("?", False)
         if builtin:
-            print(f"camera {index} ({name}): built-in, skipping — pass --cameras {index} to use it anyway", flush=True)
+            warn(f"camera {index} ({name}): built-in, skipping — pass --cameras {index} to use it anyway")
         else:
             kept.append(index)
     return tuple(kept)
@@ -101,7 +103,7 @@ class CameraSource:
     def __init__(self, rec: rr.RecordingStream, jpeg_quality: int = 75) -> None:
         indices = detect_camera_indices(include_builtin=True)
         self.streamers = [CameraStreamer(index, rec=rec, jpeg_quality=jpeg_quality) for index in indices]
-        print(f"data source:        {len(self.streamers)} camera(s) (fake, no arms)", flush=True)
+        info(f"data source:        {len(self.streamers)} camera(s) (fake, no arms)")
 
     def start(self) -> None:
         for streamer in self.streamers:
@@ -143,11 +145,11 @@ class CameraStreamer:
     def _run(self) -> None:
         cap = cv2.VideoCapture(self.index)
         if not cap.isOpened():
-            print(f"camera {self.index}: failed to open, skipping", flush=True)
+            warn(f"camera {self.index}: failed to open, skipping")
             return
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        print(f"camera {self.index}: streaming {width}x{height} -> {self.entity_path}", flush=True)
+        info(f"camera {self.index}: streaming {width}x{height} -> {self.entity_path}")
         try:
             while not self._stop.is_set():
                 ok, frame_bgr = cap.read()
@@ -159,7 +161,7 @@ class CameraStreamer:
                 rec.set_time(self.timeline, timestamp=time.time())
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 rec.log(self.entity_path, rr.Image(frame_rgb).compress(jpeg_quality=self.jpeg_quality))
-        except Exception as error:  # a crashed feed must be visible, not a silent thread death
-            print(f"camera {self.index}: streaming stopped: {error}", flush=True)
+        except Exception as err:  # a crashed feed must be visible, not a silent thread death
+            error(f"camera {self.index}: streaming stopped: {err}")
         finally:
             cap.release()

@@ -38,8 +38,12 @@ from typing import Literal
 import rerun as rr
 import rerun.blueprint as rrb
 import tyro
+from rich.live import Live
+from rich.rule import Rule
+from rich.table import Table
 
 from so100_hackathon.calibration import DEFAULT_MOTOR_NAMES, TICKS_PER_REV, MotorCalibration, fallback_calibration, save_calibration
+from so100_hackathon.console import console, error, info, note, simple_table, success, warn
 from so100_hackathon.feetech import FeetechBus, detect_arm_ports, usb_id_from_port
 from so100_hackathon.rerun_config import LiveViewerConfig
 from so100_hackathon.setup_phases import announce_phase
@@ -120,10 +124,10 @@ class _LiveArmFeed:
                 continue
             try:
                 raw = self.bus.read_positions()
-            except RuntimeError as error:
+            except RuntimeError as err:
                 failures += 1
                 if failures == 1 or failures % 50 == 0:  # ~every 5s; a hung table should be diagnosable
-                    print(f"\nbus read failed ({failures}): {error}", flush=True)
+                    warn(f"\nbus read failed ({failures}): {err}")
                 time.sleep(0.1)
                 continue
             failures = 0
@@ -154,18 +158,52 @@ class _LiveArmFeed:
         self._thread.join(timeout=1.0)
 
 
+def _range_swept(lo: int, hi: int) -> bool:
+    """Whether a joint's recorded ``[lo, hi]`` spans enough motion to count as swept.
+
+    Shared by the live green-row indicator and the final validation gate so the two never
+    disagree. The wrist_roll exemption is applied by the callers, not here (they use it
+    differently: the table skips *green*, the gate skips the *check*).
+    """
+    return 0 <= lo <= hi < TICKS_PER_REV and hi - lo >= MIN_SWEEP_TICKS
+
+
+def _sweep_table(feed: _LiveArmFeed) -> Table:
+    """A snapshot of the live MIN/POS/MAX sweep (like lerobot's record_ranges_of_motion).
+
+    Rows for joints that have been swept far enough to count turn green, so the user can
+    see at a glance which joints still need motion before Enter.
+    """
+    raw = feed.latest_raw or [0] * len(DEFAULT_MOTOR_NAMES)
+    table = simple_table()
+    table.add_column("joint")
+    for heading in ("min", "pos", "max"):
+        table.add_column(heading, justify="right")
+    for i, name in enumerate(DEFAULT_MOTOR_NAMES):
+        lo, hi = feed.range_min[i], feed.range_max[i]
+        swept = i != WRIST_ROLL_INDEX and _range_swept(lo, hi)
+        table.add_row(name, str(lo), str(raw[i]), str(hi), style="green" if swept else None)
+    return table
+
+
 def _sweep_until_enter(feed: _LiveArmFeed) -> None:
-    """Live min/pos/max table (like lerobot's record_ranges_of_motion) until Enter."""
-    n_lines = len(DEFAULT_MOTOR_NAMES) + 1
-    while True:
-        raw = feed.latest_raw or [0] * len(DEFAULT_MOTOR_NAMES)
-        print(f"{'NAME':<15} | {'MIN':>6} | {'POS':>6} | {'MAX':>6}")
-        for i, name in enumerate(DEFAULT_MOTOR_NAMES):
-            print(f"{name:<15} | {feed.range_min[i]:>6} | {raw[i]:>6} | {feed.range_max[i]:>6}")
-        if select.select([sys.stdin], [], [], 0.25)[0]:
-            sys.stdin.readline()
-            return
-        print(f"\x1b[{n_lines}A", end="")  # move cursor up to overwrite the table
+    """Refresh the live sweep table in place until Enter is pressed.
+
+    Under a non-terminal stdout (the setup server runs this as a subprocess) there is no
+    cursor to steer and the viewer's ``/ranges`` panel already shows the table, so just
+    wait for the Enter that the server writes to advance the step.
+    """
+    if not console.is_terminal:
+        while not select.select([sys.stdin], [], [], 0.25)[0]:
+            pass
+        sys.stdin.readline()
+        return
+    with Live(_sweep_table(feed), console=console, refresh_per_second=8) as live:
+        while True:
+            live.update(_sweep_table(feed))
+            if select.select([sys.stdin], [], [], 0.25)[0]:
+                sys.stdin.readline()
+                return
 
 
 def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
@@ -197,12 +235,11 @@ def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
         try:
             for motor_id, offset in zip(bus.motor_ids, previous, strict=True):
                 bus.write_homing_offset(motor_id, offset)
-            print("homing failed — previous servo offsets restored, just re-run calibration", flush=True)
+            error("homing failed — previous servo offsets restored, just re-run calibration")
         except RuntimeError:
-            print(
+            error(
                 "homing failed AND restoring the previous offsets failed — this arm's servo homing is now "
-                "inconsistent and any existing calibration for it is stale; re-run calibration before using it",
-                flush=True,
+                "inconsistent and any existing calibration for it is stale; re-run calibration before using it"
             )
         raise
 
@@ -212,7 +249,7 @@ def _pick_arm_by_wiggle(ports: tuple[str, ...]) -> str:
     buses = {port: FeetechBus(port) for port in ports}
     try:
         baselines: dict[str, list[int]] = {}
-        print(f"{len(ports)} arms found — WIGGLE any joint on the arm you want to calibrate...", flush=True)
+        info(f"{len(ports)} arms found — WIGGLE any joint on the arm you want to calibrate...")
         while True:
             for port, bus in buses.items():
                 try:
@@ -222,7 +259,7 @@ def _pick_arm_by_wiggle(ports: tuple[str, ...]) -> str:
                 if port not in baselines:
                     baselines[port] = positions
                 elif any(abs(now - then) > WIGGLE_TICKS for now, then in zip(positions, baselines[port], strict=True)):
-                    print(f"detected movement on {port}", flush=True)
+                    success(f"detected movement on {port}")
                     return port
             time.sleep(0.05)
     finally:
@@ -285,13 +322,14 @@ def main(config: CalibrateConfig) -> None:
     feed = _LiveArmFeed(bus, rec)
     half_rev = TICKS_PER_REV // 2  # ticks per 180 deg, so calibrated values come out in degrees
 
-    print(f"\ncalibrating {config.kind} {usb_id} on {port} -> {out_path}")
-    print("in the viewer: GRAY arm = the target pose to match (a live model appears after step 1)\n")
+    info(f"\ncalibrating {config.kind} {usb_id} on {port} -> {out_path}")
+    note("in the viewer: GRAY arm = the target pose to match (a live model appears after step 1)")
     try:
         rec.set_time("time", timestamp=time.time())
         target.log_pose(rec, list(target.center_angles_rad))
         announce_phase("middle")
-        input("1/2  move the arm to the MIDDLE of its range of motion (match the gray target), then press Enter...")
+        console.print(Rule("Step 1 of 2 — match the middle pose"))
+        input("  move the arm to the MIDDLE of its range of motion (match the gray target), then press Enter...")
         feed.require_responding()  # make sure the arm is actually answering before touching EEPROM
         # Half-turn homing (lerobot): written to the servos, so KEEP THE ARM STILL here.
         feed.pause()
@@ -299,7 +337,7 @@ def main(config: CalibrateConfig) -> None:
         raw_middle = _write_half_turn_homing(bus)
         feed.reset_ranges()  # while still paused, so no stale pre-homing tick can leak into the sweep
         feed.resume()
-        print(f"     homing offsets written to the servos — middle pose now reads {raw_middle}")
+        success(f"homing offsets written to the servos — middle pose now reads {raw_middle}")
 
         # From here the homing is known, so a live model is trustworthy: show it
         # mirroring the real arm (also instantly reveals any mirrored joint).
@@ -311,7 +349,7 @@ def main(config: CalibrateConfig) -> None:
         ]
         live = UrdfArm.create("live", display, rec=rec, urdf_path=urdf_path, translation=(0.0, -0.4, 0.0), color=MATTE_BLACK)
         feed.attach_urdf(live, display)
-        print("     middle pose captured — the black model now mirrors your arm live")
+        success("middle pose captured — the black model now mirrors your arm live")
 
         grip = "squeeze/release the trigger fully" if is_leader else "fully close and open the gripper"
         instruct(
@@ -322,19 +360,16 @@ def main(config: CalibrateConfig) -> None:
         )
         send_view("2/2", target, live, table=True)
         feed.show_ranges = True
-        print(f"2/2  move every joint EXCEPT wrist_roll through its full range of motion ({grip} too).")
-        print("     recording positions — press Enter to stop...")
+        console.print(Rule("Step 2 of 2 — sweep every joint"))
+        info(f"move every joint EXCEPT wrist_roll through its full range of motion ({grip} too).")
+        note("recording positions — press Enter to stop...")
         announce_phase("sweep")
         _sweep_until_enter(feed)
         range_min, range_max = list(feed.range_min), list(feed.range_max)
         range_min[WRIST_ROLL_INDEX], range_max[WRIST_ROLL_INDEX] = 0, TICKS_PER_REV - 1
         # Validate BEFORE anything is persisted: an early Enter or unmoved joint would
         # otherwise burn a garbage range (even the 4096/0 reset sentinels) into the servos.
-        unswept = [
-            name
-            for i, name in enumerate(DEFAULT_MOTOR_NAMES)
-            if i != WRIST_ROLL_INDEX and not (0 <= range_min[i] <= range_max[i] < TICKS_PER_REV and range_max[i] - range_min[i] >= MIN_SWEEP_TICKS)
-        ]
+        unswept = [name for i, name in enumerate(DEFAULT_MOTOR_NAMES) if i != WRIST_ROLL_INDEX and not _range_swept(range_min[i], range_max[i])]
         if unswept:
             raise SystemExit(
                 f"sweep incomplete for: {', '.join(unswept)} (each joint needs >= {MIN_SWEEP_TICKS} ticks of motion). "
@@ -347,24 +382,25 @@ def main(config: CalibrateConfig) -> None:
         try:
             for i, motor_id in enumerate(bus.motor_ids):
                 bus.write_position_limits(motor_id, range_min[i], range_max[i])
-        except RuntimeError as error:
+        except RuntimeError as err:
             # The sweep data is good; don't throw away the whole session over a flaky write.
-            print(
-                f"WARNING: writing servo position limits failed ({error}) — saving the calibration anyway; re-run if motion seems restricted",
-                flush=True,
-            )
+            warn(f"writing servo position limits failed ({err}) — saving the calibration anyway; re-run if motion seems restricted")
     finally:
         feed.stop()
         bus.close()
 
     calibration: list[MotorCalibration] = []
+    results = simple_table(title=f"{arm_label} calibration")
+    results.add_column("joint")
+    results.add_column("mapping")
+    results.add_column("span", justify="right")
     for i, name in enumerate(DEFAULT_MOTOR_NAMES):
         span = range_max[i] - range_min[i]
         span_deg = span * 360.0 / TICKS_PER_REV
         if i == GRIPPER_INDEX:
             # Assembly convention: raw min = closed, raw max = open (0..100%).
             calibration.append(MotorCalibration(motor_name=name, homing_offset=0, start_pos=range_min[i], end_pos=range_max[i], calib_mode="LINEAR"))
-            print(f"{name}: closed={range_min[i]} open={range_max[i]} (span {span_deg:.0f} deg)")
+            results.add_row(name, f"closed={range_min[i]} open={range_max[i]}", f"{span_deg:.0f} deg")
             continue
         calibration.append(
             MotorCalibration(
@@ -375,8 +411,9 @@ def main(config: CalibrateConfig) -> None:
                 calib_mode="DEGREE",
             )
         )
-        print(f"{name}: middle={raw_middle[i]} range=[{range_min[i]}, {range_max[i]}] (span {span_deg:.0f} deg)")
+        results.add_row(name, f"middle={raw_middle[i]} range=[{range_min[i]}, {range_max[i]}]", f"{span_deg:.0f} deg")
+    console.print(results)
 
     save_calibration(out_path, calibration, kind=config.kind, range_min=range_min, range_max=range_max)
     instruct(f"## {arm_label.capitalize()} calibrated ✓\n\nSaved to `{out_path}` (and to the servos themselves).")
-    print(f"\nwrote {out_path} — verify with: pixi run log-so100")
+    success(f"\nwrote {out_path} — verify with: pixi run log-so100")

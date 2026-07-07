@@ -25,6 +25,8 @@ from pathlib import Path
 import rerun as rr
 import rerun.blueprint as rrb
 
+from so100_hackathon.console import console, success
+
 APP_ID = "so-100"
 
 SEGMENT_TAGS = ("Good episode", "Bad episode", "Needs review")
@@ -214,16 +216,17 @@ def scan_blueprints(recordings_dir: Path) -> dict[str, Path]:
 def optimize_rrd(path: Path) -> None:
     """Compact the recording's chunks in place via ``rerun rrd optimize``."""
     tmp = path.with_name(path.name + ".tmp")
-    proc = subprocess.run(
-        [sys.executable, "-m", "rerun", "rrd", "optimize", str(path), "-o", str(tmp)],
-        capture_output=True,
-        text=True,
-    )
+    with console.status(f"[optimize]  compacting {path.name} ..."):
+        proc = subprocess.run(
+            [sys.executable, "-m", "rerun", "rrd", "optimize", str(path), "-o", str(tmp)],
+            capture_output=True,
+            text=True,
+        )
     if proc.returncode != 0:
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"rerun rrd optimize failed: {proc.stderr.strip()}")
     os.replace(tmp, path)
-    print(f"[optimize]  compacted {path}", flush=True)
+    success(f"[optimize]  compacted {path}")
 
 
 def register_rrd(catalog_uri: str, dataset_name: str, path: Path) -> dict[str, object]:

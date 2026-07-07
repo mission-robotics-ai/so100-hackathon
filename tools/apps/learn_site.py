@@ -31,6 +31,7 @@ from pathlib import Path
 import markdown
 import tyro
 
+from so100_hackathon.console import info, success
 from so100_hackathon.web_assets import VIEWER_ROUTES, ensure_web_viewer_assets
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -244,7 +245,7 @@ def build_static(out_dir: Path) -> None:
     viewer_dir.mkdir(exist_ok=True)
     for route, (asset, _content_type) in VIEWER_ROUTES.items():
         shutil.copyfile(viewer_assets[asset], out_dir / route.lstrip("/"))
-    print(f"built {len(pages)} pages -> {out_dir}/ (plus /static and /viewer)")
+    success(f"built {len(pages)} pages -> {out_dir}/ (plus /static and /viewer)")
 
 
 @dataclasses.dataclass
@@ -267,13 +268,13 @@ def main(config: Config) -> None:
     load_pages()  # fail fast on broken frontmatter
     httpd = ThreadingHTTPServer(("localhost", config.port), make_handler(viewer_assets))
     url = f"http://localhost:{config.port}"
-    print(f"course site:        {url}  (Ctrl-C to stop; edits to web/content/*.md show on reload)")
+    info(f"course site:        {url}  (Ctrl-C to stop; edits to web/content/*.md show on reload)")
     if config.open_browser:
         webbrowser.open(url)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nshutting down")
+        info("\nshutting down")
 
 
 if __name__ == "__main__":

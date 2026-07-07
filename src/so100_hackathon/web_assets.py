@@ -14,6 +14,8 @@ from pathlib import Path
 
 import rerun as rr
 
+from so100_hackathon.console import console, success
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 WEB_VIEWER_VERSION = rr.__version__
@@ -40,13 +42,14 @@ def ensure_web_viewer_assets(version: str = WEB_VIEWER_VERSION) -> dict[str, Pat
 
     cache.mkdir(parents=True, exist_ok=True)
     url = NPM_TARBALL.format(version=version)
-    print(f"Fetching @rerun-io/web-viewer@{version} ...", flush=True)
-    with urllib.request.urlopen(url) as resp:  # noqa: S310 - trusted npm registry URL
-        data = resp.read()
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-        for name, dest in targets.items():
-            member = tar.extractfile(f"package/{name}")
-            if member is None:
-                raise RuntimeError(f"web-viewer tarball is missing package/{name}")
-            dest.write_bytes(member.read())
+    with console.status(f"fetching @rerun-io/web-viewer@{version} ..."):
+        with urllib.request.urlopen(url) as resp:  # noqa: S310 - trusted npm registry URL
+            data = resp.read()
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for name, dest in targets.items():
+                member = tar.extractfile(f"package/{name}")
+                if member is None:
+                    raise RuntimeError(f"web-viewer tarball is missing package/{name}")
+                dest.write_bytes(member.read())
+    success(f"cached @rerun-io/web-viewer@{version} ({len(targets)} files)")
     return targets

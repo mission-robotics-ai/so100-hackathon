@@ -23,12 +23,14 @@ from pathlib import Path
 
 import numpy as np
 import tyro
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
 
 os.environ.setdefault("RERUN_INSECURE_SKIP_HOST_CHECK", "1")
 
 import rerun as rr  # noqa: E402 - the env var above must be set before use
 
 from so100_hackathon.calibration import MotorCalibration, load_arm_kind, load_arm_ranges, load_calibration  # noqa: E402
+from so100_hackathon.console import console, enable_pretty_tracebacks, error, info, success, warn  # noqa: E402
 from so100_hackathon.feetech import FeetechBus, detect_arm_ports, usb_id_from_port  # noqa: E402
 from so100_hackathon.takes import APP_ID  # noqa: E402
 
@@ -90,7 +92,7 @@ def open_follower(calibration_dir: Path, port: str | None) -> Follower:
     if len(candidates) > 1:
         raise SystemExit(f"multiple follower candidates ({', '.join(c[1] for c in candidates)}); pass --port to pick one")
     chosen_port, usb_id, calibration, (range_min, range_max) = candidates[0]
-    print(f"follower: {usb_id} on {chosen_port}")
+    info(f"follower: {usb_id} on {chosen_port}")
     return Follower(name=usb_id, bus=FeetechBus(chosen_port), calibration=calibration, range_min=range_min, range_max=range_max)
 
 
@@ -149,7 +151,7 @@ def main(config: Config) -> None:
     dataset = client.get_dataset(name=config.dataset)
     times, goals, goal_path = load_trajectory(dataset, config.episode)
     duration = (times[-1] - times[0]) / config.speed
-    print(f"replaying '{config.episode}': {len(goals)} steps over {duration:.1f}s (from {goal_path})")
+    info(f"replaying '{config.episode}': {len(goals)} steps over {duration:.1f}s (from {goal_path})")
 
     follower = open_follower(config.calibration_dir, config.port)
 
@@ -163,7 +165,7 @@ def main(config: Config) -> None:
         follower.bus.set_torque(False)
         follower.bus.configure_follower_control()
         follower.bus.set_torque(True)
-        print("torque ON -- keep a hand near the arm; Ctrl-C stops and releases it")
+        warn("torque ON -- keep a hand near the arm; Ctrl-C stops and releases it")
 
         # Glide from wherever the arm is to the trajectory's first pose.
         start_pose = np.asarray(read_calibrated(follower))
@@ -175,26 +177,36 @@ def main(config: Config) -> None:
 
         # Play the trajectory on its own recorded clock, scaled by --speed.
         wall_start = time.monotonic()
-        for i in range(len(goals)):
-            target_wall = wall_start + (times[i] - times[0]) / config.speed
-            sleep_s = target_wall - time.monotonic()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-            drive_to(follower, goals[i], rec)
-        print("replay finished")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("replaying", total=len(goals))
+            for i in range(len(goals)):
+                target_wall = wall_start + (times[i] - times[0]) / config.speed
+                sleep_s = target_wall - time.monotonic()
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                drive_to(follower, goals[i], rec)
+                progress.advance(task)
+        success("replay finished")
     except KeyboardInterrupt:
-        print("\nstopped")
+        info("\nstopped")
     finally:
         try:
             follower.bus.set_torque(False)
-            print("torque released")
-        except (RuntimeError, OSError) as error:
-            print(f"FAILED to release torque ({error}) -- power-cycle the arm to free it")
+            success("torque released")
+        except (RuntimeError, OSError) as err:
+            error(f"FAILED to release torque ({err}) -- power-cycle the arm to free it")
         follower.bus.close()
 
 
 if __name__ == "__main__":
+    enable_pretty_tracebacks()
     try:
         main(tyro.cli(Config))
-    except ConnectionError as error:
-        raise SystemExit(f"cannot reach the catalog -- is `pixi run so100-server` running? ({error})") from None
+    except ConnectionError as err:
+        raise SystemExit(f"cannot reach the catalog -- is `pixi run so100-server` running? ({err})") from None

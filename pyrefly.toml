@@ -1,4 +1,4 @@
-# Pyrefly config (examples-monorepo conventions, single-package edition).
+# Pyrefly type-checking config: the src/ package and tools/ scripts.
 project-includes = ["src/**/*", "tools/**/*"]
 project-excludes = ["**/__pycache__", "**/.pixi/**"]
 

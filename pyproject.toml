@@ -32,12 +32,9 @@ pyobjc-framework-avfoundation = "*"
 
 [tool.pixi.pypi-dependencies]
 so100_hackathon = { path = ".", editable = true }
-# Pinned back to 0.33.1: the 0.34 web viewer cannot talk grpc-web to `rr.server.Server`
-# (tonic-web-wasm-client 0.8.0 drops the grpc-status trailer; strict tonic 0.14 rejects
-# the stream). Restore 0.34 once RR-5147 ships in a release.
-rerun-sdk = "==0.33.1"
+rerun-sdk = "==0.34.1"
 feetech-servo-sdk = ">=1.0.0"
-datafusion = ">=52,<53"  # rerun-sdk 0.33 requires datafusion major 52
+datafusion = ">=53,<54"  # rerun-sdk 0.34 requires datafusion major 53
 markdown = ">=3.6"
 
 # LeRobot pins an older rerun-sdk which conflicts with ours, so the export env is fully
@@ -64,30 +61,26 @@ vulture = "*"
 [tool.pixi.feature.dev.activation.env]
 PIXI_DEV_MODE = "1"
 
-[tool.pixi.feature.dev.tasks.lint]
-cmd = "ruff check ."
-description = "Lint the package"
+# Python code checks, following the rerun_template `py-*` naming. Only `py-fmt` mutates
+# files; `py-fmt-check` + `py-lint` are what CI enforces (see .github/workflows/python.yml).
 
-# Run first ruff fix, then ruff format, order is important see also https://twitter.com/charliermarsh/status/1717229721954799727
+# Run ruff's fixer before the formatter -- order matters:
+# https://twitter.com/charliermarsh/status/1717229721954799727
 [tool.pixi.feature.dev.tasks.py-fmt]
 cmd = "ruff check --fix . && ruff format ."
-description = "Format the Python code"
+description = "Autofix lints and format the Python code (ruff)"
 
 [tool.pixi.feature.dev.tasks.py-fmt-check]
 cmd = "ruff format --check . && ruff check ."
-description = "Check formatting and lints of the Python code"
+description = "Check Python formatting and lints without changing files (ruff)"
 
 [tool.pixi.feature.dev.tasks.py-lint]
 cmd = "pyrefly check src tools"
-description = "Typecheck the Python code"
+description = "Typecheck the Python code (pyrefly)"
 
-[tool.pixi.feature.dev.tasks.typecheck]
-cmd = "pyrefly check src tools"
-description = "Typecheck the package"
-
-[tool.pixi.feature.dev.tasks.deadcode]
+[tool.pixi.feature.dev.tasks.py-deadcode]
 cmd = "vulture --config pyproject.toml"
-description = "Find dead code in the package"
+description = "Find dead code (vulture)"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
