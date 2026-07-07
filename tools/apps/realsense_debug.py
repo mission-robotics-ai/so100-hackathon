@@ -22,6 +22,7 @@ import time
 import numpy as np
 import pyrealsense2 as rs
 import rerun as rr
+import rerun.blueprint as rrb
 import tyro
 
 from so100_hackathon.rerun_config import LiveViewerConfig
@@ -55,6 +56,9 @@ class Config:
     max_depth: float = 5.0
     """Discard depth readings beyond this many meters (0 disables the filter)."""
 
+    image_plane_distance: float = 0.5
+    """How far from the camera the pinhole frustums draw their image plane, in meters."""
+
     serial: str | None = None
     """Serial number of the device to open (default: first RealSense found)."""
 
@@ -74,7 +78,22 @@ def _require_device(serial: str | None) -> rs.device:
     raise SystemExit(f"no RealSense with serial {serial!r} (connected: {known})")
 
 
-def _log_camera_models(rec: rr.RecordingStream, profile: rs.pipeline_profile) -> None:
+def _blueprint() -> rrb.Blueprint:
+    """3D fusion view beside the two image streams (the heuristic layout starts the
+    3D eye inside the point cloud, which makes orbit/zoom feel broken)."""
+    return rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Spatial3DView(origin=ROOT_ENTITY, name="fusion"),
+            rrb.Vertical(
+                rrb.Spatial2DView(origin=RGB_ENTITY, name="rgb"),
+                rrb.Spatial2DView(origin=DEPTH_ENTITY, name="depth"),
+            ),
+            column_shares=[3, 2],
+        )
+    )
+
+
+def _log_camera_models(rec: rr.RecordingStream, profile: rs.pipeline_profile, image_plane_distance: float) -> None:
     """Log the static scene: view coordinates, both pinholes, and the depth->color extrinsics."""
     rec.log(ROOT_ENTITY, rr.ViewCoordinates.RDF, static=True)
 
@@ -89,6 +108,7 @@ def _log_camera_models(rec: rr.RecordingStream, profile: rs.pipeline_profile) ->
                 resolution=[intrinsics.width, intrinsics.height],
                 focal_length=[intrinsics.fx, intrinsics.fy],
                 principal_point=[intrinsics.ppx, intrinsics.ppy],
+                image_plane_distance=image_plane_distance,
             ),
             static=True,
         )
@@ -127,7 +147,8 @@ def main(config: Config) -> None:
     threshold = rs.threshold_filter(min_dist=0.0, max_dist=config.max_depth) if config.max_depth > 0 else None
     frame_count = 0
     try:
-        _log_camera_models(rec, profile)
+        rec.send_blueprint(_blueprint())
+        _log_camera_models(rec, profile, config.image_plane_distance)
         deadline = None if config.seconds is None else time.monotonic() + config.seconds
         while deadline is None or time.monotonic() < deadline:
             frames = pipeline.wait_for_frames()
