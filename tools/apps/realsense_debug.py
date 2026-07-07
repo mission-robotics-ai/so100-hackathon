@@ -50,6 +50,9 @@ class Config:
     seconds: float | None = None
     """Stop after this many seconds (default: run until Ctrl-C)."""
 
+    max_depth: float = 5.0
+    """Discard depth readings beyond this many meters (0 disables the filter)."""
+
     serial: str | None = None
     """Serial number of the device to open (default: first RealSense found)."""
 
@@ -116,6 +119,7 @@ def main(config: Config) -> None:
 
     pipeline = rs.pipeline()
     profile = pipeline.start(rs_config)
+    threshold = rs.threshold_filter(max_dist=config.max_depth) if config.max_depth > 0 else None
     frame_count = 0
     try:
         _log_camera_models(rec, profile)
@@ -126,9 +130,12 @@ def main(config: Config) -> None:
 
             depth_frame = frames.get_depth_frame()
             if depth_frame:
+                units = depth_frame.get_units()
+                if threshold is not None:
+                    depth_frame = threshold.process(depth_frame)
                 depth = np.asanyarray(depth_frame.get_data())
                 # `meter` is depth units per meter: z16 at the default 1mm scale -> 1000.
-                rec.log(DEPTH_ENTITY, rr.DepthImage(depth, meter=1.0 / depth_frame.get_units()))
+                rec.log(DEPTH_ENTITY, rr.DepthImage(depth, meter=1.0 / units))
 
             color_frame = frames.get_color_frame()
             if color_frame:
