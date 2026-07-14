@@ -644,6 +644,16 @@ th { background: var(--code-bg); }
 
 .episode-note { color: var(--ok-fg); font-size: 0.78rem; line-height: 1.4; }
 
+/* Catalog navigation, right under the episode card: browse everything collected so far
+   in the viewer's dataset table, and an explicit way back to the episode view. */
+.catalog-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.catalog-nav .collect-btn { justify-content: center; }
+
 .panel-buttons {
   display: flex;
   flex-direction: column;

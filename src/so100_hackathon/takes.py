@@ -240,6 +240,4 @@ def register_rrd(catalog_uri: str, dataset_name: str, path: Path) -> dict[str, o
         "segment_ids": segment_ids,
         # Deep links a running web viewer can `open()` directly.
         "viewer_urls": viewer_urls,
-        # The whole dataset (all episodes), for the "view dataset episodes" link.
-        "dataset_url": viewer_urls[0].split("?", 1)[0] if viewer_urls else None,
     }

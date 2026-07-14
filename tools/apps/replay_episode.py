@@ -4,8 +4,8 @@ Queries the episode's action trajectory (the ``<follower>/goal`` series) from th
 catalog served by ``pixi run so100-server``, ramps the follower gently to the starting
 pose, then plays the trajectory back at recorded speed::
 
-    pixi run replay-episode -- --dataset my_task --episode episode_1
-    pixi run replay-episode -- --dataset my_task --episode episode_1 --speed 0.5
+    pixi run replay-episode -- --dataset my_task --episode episode_01
+    pixi run replay-episode -- --dataset my_task --episode episode_01 --speed 0.5
 
 The follower must be plugged in and calibrated; the leader is not needed. If the
 long-lived server currently holds the arms (Collect page), disconnect them there first --

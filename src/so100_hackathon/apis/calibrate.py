@@ -252,45 +252,66 @@ def main(config: CalibrateConfig) -> None:
         """The current step's instructions, shown as a text panel INSIDE the viewer."""
         rec.log("/instructions", rr.TextDocument(text, media_type="text/markdown"), static=True)
 
+    def send_split(text_view: rrb.TextDocumentView, other: rrb.View) -> None:
+        """Instructions beside a view at 1:3, so the 3D content dominates (the
+        follower's layout is mirrored left/right)."""
+        views, shares = ((text_view, other), [1, 3]) if is_leader else ((other, text_view), [3, 1])
+        rec.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views, column_shares=shares), collapse_panels=True), make_active=True)
+
     def send_view(step: str, *arms: UrdfArm, table: bool = False) -> None:
         """Per-phase layout: instructions next to the 3D pose (step 1) or the live
-        MIN/POS/MAX table (step 2). The follower's layout is mirrored left/right."""
+        MIN/POS/MAX table (step 2)."""
         text_view = rrb.TextDocumentView(origin="/instructions", name=f"{step} Instructions for a {arm_label}")
-        other: rrb.View
         if table:
             other = rrb.TextDocumentView(origin="/ranges", name=f"Degrees of freedom of a {arm_label}")
-        else:
-            other = rrb.Spatial3DView(
+            views = (text_view, other) if is_leader else (other, text_view)
+            rec.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views), collapse_panels=True), make_active=True)
+            return
+        send_split(
+            text_view,
+            rrb.Spatial3DView(
                 name="Leader arm" if is_leader else "Follower arm",
                 origin="/",
                 contents=["$origin/**", "- /instructions/**", "- /ranges/**"],
                 overrides={arm.collision_geometries_path: rrb.EntityBehavior(visible=False) for arm in arms},
-            )
-        views = (text_view, other) if is_leader else (other, text_view)
-        rec.send_blueprint(rrb.Blueprint(rrb.Horizontal(*views), collapse_panels=True), make_active=True)
+            ),
+        )
 
     ports = (config.port,) if config.port else detect_arm_ports()
     if not ports:
         raise SystemExit("no SO-100 arms found (no /dev/cu.usbmodem* ports); pass --port explicitly")
+    urdf_path = LEADER_URDF_PATH if is_leader else FOLLOWER_URDF_PATH
+    # The gray target doubles as the "which arm?" picture during port selection, so it is
+    # created (and posed — unposed URDF meshes render as a disassembled pile) up front.
+    # The model is several MB: parse and log it once.
+    target = UrdfArm.create("target", fallback_calibration(), rec=rec, urdf_path=urdf_path, translation=(0.0, 0.0, 0.0), color=(0.5, 0.5, 0.5))
+    rec.set_time("time", timestamp=time.time())
+    target.log_pose(rec, list(target.center_angles_rad))
     if len(ports) == 1:
         port = ports[0]
     else:
         announce_phase("wiggle")
+        look = "the handle and trigger" if is_leader else "the gripper jaws"
         instruct(
-            f"## Which arm?\n\nSeveral arms are plugged in.\n\n**Wiggle any joint** on the {arm_label} — the arm that moves is picked automatically."
+            f"# Wiggle the {arm_label.upper()}\n\n"
+            f"Several arms are plugged in — the arm that moves is picked automatically.\n\n"
+            f"The **{arm_label}** is the one with {look}: it looks like the 3D model shown next to this text. "
+            f"**Wiggle any of its joints.**"
         )
-        rec.send_blueprint(rrb.Blueprint(rrb.TextDocumentView(origin="/instructions", name="Instructions"), collapse_panels=True), make_active=True)
+        send_split(
+            rrb.TextDocumentView(origin="/instructions", name="Instructions"),
+            rrb.Spatial3DView(
+                name=f"The {arm_label}",
+                origin="/",
+                contents=["+ /target/**"],
+                overrides={target.collision_geometries_path: rrb.EntityBehavior(visible=False)},
+            ),
+        )
         port = _pick_arm_by_wiggle(ports)
     usb_id = usb_id_from_port(port)
     out_path = config.calibration_dir / f"{usb_id}.json"
-
-    urdf_path = LEADER_URDF_PATH if is_leader else FOLLOWER_URDF_PATH
-    target = UrdfArm.create("target", fallback_calibration(), rec=rec, urdf_path=urdf_path, translation=(0.0, 0.0, 0.0), color=(0.5, 0.5, 0.5))
-    # Pose the target right away: until its joint transforms arrive the static URDF
-    # meshes render as a disassembled pile.
-    rec.set_time("time", timestamp=time.time())
-    target.log_pose(rec, list(target.center_angles_rad))
     instruct(
+        f"# Move the {arm_label.upper()}\n\n"
         f"## Step 1 of 2 — match the target pose\n\n"
         f"Move your **{arm_label}** by hand to match the **gray target**: every joint at the middle of its range of motion. "
         f"This pose becomes 0° for every joint.\n\n"
@@ -329,7 +350,8 @@ def main(config: CalibrateConfig) -> None:
 
         grip = "squeeze/release the trigger fully" if is_leader else "fully close and open the gripper"
         instruct(
-            f"## Step 2 of 2 — sweep every joint\n\n"
+            f"# Sweep the {arm_label.upper()}\n\n"
+            f"## Step 2 of 2 — every joint, full range\n\n"
             f"Move **every joint except wrist_roll** through its full range of motion ({grip} too). "
             f"Watch MIN and MAX fill in as you go — each joint needs a decent sweep to count.\n\n"
             f"When every joint is swept, continue (or press Enter in the terminal)."
@@ -412,5 +434,5 @@ def main(config: CalibrateConfig) -> None:
         lerobot_path = lerobot_calibration_path(config.kind, usb_id)
         save_lerobot_calibration(lerobot_path, DEFAULT_MOTOR_NAMES, bus.motor_ids, homing_offsets, range_min, range_max)
         print(f"also wrote {lerobot_path} (LeRobot format — lerobot/newt tools find it with --robot.id={usb_id})")
-    instruct(f"## {arm_label.capitalize()} calibrated ✓\n\nSaved to `{out_path}` (and to the servos themselves).")
+    instruct(f"# {arm_label.capitalize()} calibrated ✓\n\nSaved to `{out_path}` (and to the servos themselves).")
     print(f"\nwrote {out_path} — verify with: pixi run log-so100")

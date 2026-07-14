@@ -10,3 +10,6 @@ __pycache__/
 
 # LeRobot exports (dataset_collector.py "export to LeRobot" button)
 /lerobot/
+
+# playwright-cli session artifacts (snapshots, console logs from browser validation)
+.playwright-cli/

@@ -4,23 +4,10 @@ order: 1
 ---
 
 
-## Install
-
-Everything runs through [Pixi](https://pixi.sh) — install it first if you don't have it:
-
-```bash
-curl -fsSL https://pixi.sh/install.sh | sh
-```
-
-Then clone the repo and install the environment:
-
-```bash
-git clone https://github.com/rerun-io/so100-hackathon.git
-cd so100-hackathon
-pixi install
-```
-
-That's it — every command in this dataset loop is a `pixi run ...` task from the repo root. Every step on this page runs in the embedded [Rerun](https://rerun.io/) viewer.
+You're reading this from `pixi run learn`, so the install already happened — every
+command in this dataset loop is a `pixi run ...` task from the repo root, and every step
+on this page runs in the embedded [Rerun](https://rerun.io/) viewer. (Setting up a
+teammate's machine? The bootstrap commands are at the top of the repo's `README.md`.)
 
 <aside class="highlight">
 <p>Prefer doing everything from the terminal without this site? The repo's `README.md` is a

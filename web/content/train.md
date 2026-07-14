@@ -46,43 +46,16 @@ pixi run export-lerobot -- --dataset my_task --repo-id <your-hf-user>/my_task --
 Your dataset is now public infrastructure: loadable by anyone (including a training job on
 a GPU box) with `LeRobotDataset("<your-hf-user>/my_task")`.
 
-## Fine-tune MolmoAct2
+## Fine-tune with NewTheory
 
-The hackathon's policy is [MolmoAct2](https://github.com/allenai/molmoact2), Ai2's open
-vision-language-action model — and it consumes LeRobot v3 datasets natively, exactly what
-you just exported. It is *language-conditioned*: the task string you typed while
-recording becomes the command the policy responds to, and every team's dataset can be
-pooled into one multi-task fine-tune. Use the branch with the policy integration
-([allenai/lerobot `molmoact2-policy`](https://github.com/allenai/lerobot/tree/molmoact2-policy)),
-and train on a GPU machine — the dataset is on the Hub, so it doesn't need your laptop.
+Fine-tuning is NewTheory's side of the loop: their `newt` CLI takes the LeRobot dataset
+you just exported and fine-tunes the NT-0 SO-101 base model on it, on their GPUs — your
+laptop is done working. It is *language-conditioned*: the task sentence you typed while
+recording becomes the command the trained model responds to.
 
-First add the quantile normalization stats MolmoAct2 expects (once per dataset):
+Everything you need — installing the `newt` CLI, your API key, launching the run, and
+watching it train — is in their guide:
 
-```bash
-python src/lerobot/datasets/v30/augment_dataset_quantile_stats.py \
-    --repo-id=<your-hf-user>/my_task
-```
+**→ [How fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-finetune-works)**
 
-Then LoRA fine-tune, starting from the checkpoint already trained on pooled community
-SO-100/SO-101 data (`allenai/MolmoAct2-SO100_101`) — don't start from the base model:
-
-```bash
-accelerate launch $(which lerobot_train) \
-    --dataset.repo_id=<your-hf-user>/my_task \
-    --policy.type=molmoact2 \
-    --policy.checkpoint_path=allenai/MolmoAct2-SO100_101 \
-    --policy.train_mode_vlm=lora \
-    --policy.setup_type="single so100 robotic arm on a tabletop" \
-    --policy.control_mode="absolute joint pose" \
-    --batch_size=16 \
-    --output_dir=outputs/molmoact2_my_task --job_name=molmoact2_my_task
-```
-
-Rough sizing: LoRA fits comfortably on one 40–80 GB GPU; with the VLM frozen
-(`--policy.train_mode_vlm=freeze`, action expert still trains — that part matters most)
-a single 24 GB card is enough. For a few hundred demos, batch 16–32 and ~10k steps is a
-sensible starting point. To pool several teams' tasks, list multiple repo ids in the
-dataset config — same robot, same `top`/`side` cameras, same control mode, distinct task
-strings is all it takes.
-
-Either way, while it cooks, head to Deploy to see how a trajectory gets back onto the robot.
+While it cooks, head to Deploy to see how motion gets back onto the robot.

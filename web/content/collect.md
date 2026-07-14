@@ -20,7 +20,7 @@ Make sure `pixi run so100-server` is still running, then work straight from this
   right now), a green check (saved to the catalog).
 - **Task** — the natural-language task description, e.g. *"Pick up the ball and place it
   in the box"*. It becomes the LeRobot **task** string when you later export — and for a
-  language-conditioned policy like MolmoAct2 it *is* the command the trained model
+  language-conditioned policy like NewTheory's NT-0 it *is* the command the trained model
   responds to, so write a real imperative sentence, not `task1`.
 - **Tag** — a curation label: *Good episode*, *Bad episode*, or *Needs review*. You'll
   filter by it on the Refine page.
@@ -37,8 +37,8 @@ workspace, one **side** camera looking across it. The first detected camera (`ca
 exports as `top`, the second (`cam1`) as `side` — check the livestream to confirm which
 is which before you record, and keep the placement fixed for the whole dataset (and, for
 the hackathon, as close to the other rigs as you can — pooled training assumes consistent
-viewpoints). Avoid wrist-mounted cameras: the MolmoAct2 SO-100/101 checkpoints were
-trained on third-person views only.
+viewpoints). Avoid wrist-mounted cameras: the SO-101 base model these fine-tunes start
+from was trained on third-person views only.
 
 ## Prefer the terminal?
 

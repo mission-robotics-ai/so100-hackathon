@@ -7,10 +7,13 @@ for training, and replay back on the arm.
 
 ## Welcome
 
-Everything runs through [Pixi](https://pixi.sh) — install it, then the repo:
+Everything runs through [Pixi](https://pixi.sh) — install it, then clone the repo and
+install its environment:
 
 ```bash
 curl -fsSL https://pixi.sh/install.sh | sh
+git clone https://github.com/rerun-io/so100-hackathon.git
+cd so100-hackathon
 pixi install
 ```
 
@@ -91,7 +94,7 @@ Collect page does:
 ```bash
 curl -X POST localhost:8000/arms/connect
 curl -X POST localhost:8000/live/pause          # pause the live stream (and /live/resume: same stream continues)
-curl -X POST localhost:8000/start -d '{"dataset":"my_task","episode":"episode_1","task":"Pick up the ball"}'
+curl -X POST localhost:8000/start -d '{"dataset":"my_task","episode":"episode_01","task":"Pick up the ball"}'
 curl -X POST localhost:8000/stop  -d '{"tag":"Good episode"}'
 curl -X POST localhost:8000/episode/update -d '{"task":"Pick up the ball","tag":"Bad episode"}'  # fix the last episode's metadata
 curl -X POST localhost:8000/arms/disconnect     # frees the serial ports again
@@ -103,7 +106,7 @@ curl -X POST localhost:8000/arms/disconnect     # frees the serial ports again
 pixi run query-dataset                                      # list datasets in the catalog
 pixi run query-dataset -- --dataset my_task                 # per-episode table: task, tag, duration, size
 pixi run query-dataset -- --dataset my_task --tag "Good episode"
-pixi run query-dataset -- --dataset my_task --episode episode_1 --entity follower/position
+pixi run query-dataset -- --dataset my_task --episode episode_01 --entity follower/position
 ```
 
 The metadata stamped at record time comes back as `property:...` columns on the
@@ -124,8 +127,8 @@ The first run solves the isolated `export` environment — LeRobot's rerun-sdk p
 conflicts with the repo's, so `tools/apps/export_lerobot.py` stages episodes from the
 catalog and hands off to `_export_lerobot_writer.py` inside that env. Camera streams
 export as `observation.images.top` / `.side` in cam-index order (`--camera-names` to
-override). Then LoRA fine-tune MolmoAct2 from `allenai/MolmoAct2-SO100_101` on a GPU
-box — see the course's Train page for the exact commands.
+override). From here, fine-tuning runs on NewTheory's infrastructure via their `newt`
+CLI — see [how fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-finetune-works).
 
 Joint units are converted on export: recordings are in calibrated degrees, but the
 dataset is written in **LeRobot's normalized wire units** (arm joints [-100, 100] over
@@ -141,27 +144,18 @@ Replay a recorded episode's action trajectory on the follower (leader not needed
 sure the server isn't holding the arms):
 
 ```bash
-pixi run replay-episode -- --dataset my_task --episode episode_1 --speed 0.5
+pixi run replay-episode -- --dataset my_task --episode episode_01 --speed 0.5
 ```
 
 It ramps gently to the starting pose, plays the trajectory, streams the replayed joints
 to the live proxy, and releases torque when done. Keep a hand near the arm on the first
 run.
 
-Run a trained MolmoAct2 policy the same way — start
-`tools/apps/policy_server_molmoact2.py --checkpoint <hf-user>/molmoact2_my_task` on the
-GPU box, then:
-
-```bash
-pixi run deploy-policy -- --task "pick up the ball" --server http://<gpu-box>:8080/act --dry-run
-pixi run deploy-policy -- --task "pick up the ball" --server http://<gpu-box>:8080/act
-```
-
-`--dry-run` streams predictions to the viewer without motion; live, goals are clamped to
-the calibrated range and `--max-step-deg` per tick. Always dry-run a new checkpoint first.
-Live rollouts are recorded as episodes of `recordings/molmoact2_eval/` (task = the
-`--task` sentence, tag *Needs review*) and registered to the catalog — evaluation runs
-are queryable, comparable, and re-exportable like any other take (`--dataset ""` to skip).
+Running a trained policy is NewTheory's side of the loop: once your `newt finetune` run
+is live, the `newt` SDK drives the follower directly (`Robot(model="<your-tag>")`) —
+see [how fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-finetune-works).
+An arm calibrated here is already set up for it (the dual-written calibration above);
+just make sure nothing else is holding the follower's serial port.
 
 ## Development
 
