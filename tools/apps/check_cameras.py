@@ -68,8 +68,7 @@ def usb_video_cameras() -> list[str] | None:
         children = node.get("IORegistryEntryChildren", [])
         name = node.get("USB Product Name")
         if name is not None and any(
-            child.get("IOObjectClass") == "IOUSBHostInterface" and child.get("bInterfaceClass") == USB_VIDEO_INTERFACE_CLASS
-            for child in children
+            child.get("IOObjectClass") == "IOUSBHostInterface" and child.get("bInterfaceClass") == USB_VIDEO_INTERFACE_CLASS for child in children
         ):
             found[node.get("locationID", name)] = str(name)
         for child in children:
