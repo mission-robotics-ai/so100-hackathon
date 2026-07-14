@@ -67,21 +67,24 @@ def create_blueprint(
     active = next((i for i, name in enumerate(arm_names) if name != leader_name), 0)
     tabs = rrb.Tabs(*position_tabs, diagnostics, active_tab=active)
 
-    top: list[rrb.Spatial3DView | rrb.Spatial2DView] = []
-    if show_urdf:
-        top.append(
-            rrb.Spatial3DView(
-                name="arms",
-                origin="/",
-                # Include ONLY the URDF visual meshes: no cameras, collision meshes, or
-                # transform/scalar entities cluttering the view's entity tree. Ancestor
-                # transforms still apply — contents filters visibility, not the hierarchy.
-                contents=[f"+ /{path}/**" for path in visual_paths or []],
-            )
+    arms_3d = (
+        rrb.Spatial3DView(
+            name="arms",
+            origin="/",
+            # Include ONLY the URDF visual meshes: no cameras, collision meshes, or
+            # transform/scalar entities cluttering the view's entity tree. Ancestor
+            # transforms still apply — contents filters visibility, not the hierarchy.
+            contents=[f"+ /{path}/**" for path in visual_paths or []],
         )
-    top.extend(rrb.Spatial2DView(name=path.rsplit("/", 1)[-1], origin=path) for path in camera_paths or [])
+        if show_urdf
+        else None
+    )
+    camera_views = [rrb.Spatial2DView(name=path.rsplit("/", 1)[-1], origin=path) for path in camera_paths or []]
 
-    if not top:
+    # Cameras stack vertically so the 3D view keeps most of the width (3:2 split).
+    cameras = rrb.Vertical(*camera_views) if len(camera_views) > 1 else (camera_views[0] if camera_views else None)
+    panes = [pane for pane in (arms_3d, cameras) if pane is not None]
+    if not panes:
         return rrb.Blueprint(tabs, collapse_panels=True)
-    spatial = rrb.Horizontal(*top) if len(top) > 1 else top[0]
+    spatial = rrb.Horizontal(*panes, column_shares=[3, 2]) if len(panes) == 2 else panes[0]
     return rrb.Blueprint(rrb.Vertical(spatial, tabs, row_shares=[2, 1]), collapse_panels=True)
