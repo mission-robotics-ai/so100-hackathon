@@ -2,18 +2,8 @@
 
 Teach an SO-100 arm a task, end to end: teleoperated data collection into
 [Rerun](https://rerun.io) recordings, curation via a local catalog, export to LeRobot v3
-for training, and replay back on the arm. Ported from the internal Rust setup in
-[rerun-io/portugal](https://github.com/rerun-io/portugal); the SO-ARM100 URDF in
-`data/so100/` comes from rerun's `examples/python/animated_urdf`.
+for training, and replay back on the arm.
 
-**Start with the course site** — it walks through everything below step by step, with an
-embedded live viewer and a recording UI, starting from cloning this repo:
-
-> **https://so100-hackathon.vercel.app** *(not deployed yet — serve it locally with
-> `pixi run learn` → http://localhost:3000)*
-
-Prefer the terminal? This README is the terse, CLI-only mirror of the same six steps —
-pick either path, they produce the same datasets.
 
 ## Welcome
 
@@ -26,7 +16,13 @@ pixi install
 
 Plug in the arm(s) — they show up as `/dev/cu.usbmodem<USB_ID>`.
 
-## Set up: test and calibrate your robot
+## START HERE
+
+```bash 
+pixi run learn → http://localhost:3000
+```
+
+## CLI Set up: test and calibrate your robot
 
 ```bash
 pixi run log-so100                        # smoke test: viewer + telemetry + cameras + animated URDF
