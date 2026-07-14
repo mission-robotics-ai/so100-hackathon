@@ -1,0 +1,27 @@
+name: sync-upstream
+
+# Keeps this fork a faithful mirror of rerun-io/so100-hackathon.
+# rerun-io/so100-hackathon is upstream truth until the hackathon freeze.
+# Runs every 6h and on-demand. Fails loud (the run errors, visibly) if the
+# fork has diverged and cannot fast-forward from upstream — a divergence
+# means someone committed to the fork, which this repo is not supposed to carry.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fast-forward main from upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh repo sync mission-robotics-ai/so100-hackathon \
+            --source rerun-io/so100-hackathon \
+            --branch main
