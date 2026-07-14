@@ -147,13 +147,16 @@ function viewerSlot(box) {
   let retryTimer = null;
   let pendingUntil = 0; // while now < this and unsynced, a programmatic switch is in flight
   let bootGen = 0; // bumped by hide()/show(): cancels any in-flight show()
-  let queuedFocus = null; // focus() requested while the viewer was still booting
+  let queuedAction = null; // focus()/open() requested while the viewer was still booting
 
   function trySync() {
     if (!viewer || !wanted) return false;
     if (synced !== wanted) {
       try {
-        if (viewer.get_active_recording_id() !== wanted) viewer.set_active_recording_id(wanted);
+        // Set unconditionally (not only on id change): when the viewer sits on a
+        // catalog table screen the active recording id may already match, and this
+        // call is what navigates back to the recording.
+        viewer.set_active_recording_id(wanted);
         if (viewer.get_active_recording_id() === wanted) synced = wanted;
       } catch {
         /* viewer still booting or recording not arrived yet; retried by the timer */
@@ -221,10 +224,10 @@ function viewerSlot(box) {
     viewer = new WebViewer();
     await viewer.start(proxyUrl, box, VIEWER_OPTIONS);
     if (gen !== bootGen) return;
-    if (queuedFocus) {
-      const { segmentId, url } = queuedFocus;
-      queuedFocus = null;
-      focus(segmentId, url);
+    if (queuedAction) {
+      const action = queuedAction;
+      queuedAction = null;
+      action();
     }
   }
 
@@ -243,7 +246,7 @@ function viewerSlot(box) {
     synced = null;
     followWanted = false;
     playWanted = false;
-    queuedFocus = null;
+    queuedAction = null;
     overlay.hidden = soft;
   }
 
@@ -272,22 +275,26 @@ function viewerSlot(box) {
     keepTrying();
   }
 
+  // viewer.open with the boot/error guard, shared by focus() and open().
+  function openUrl(url) {
+    if (!viewer || !url) return;
+    try {
+      viewer.open(url);
+    } catch (error) {
+      console.warn("viewer.open failed:", error);
+    }
+  }
+
   // Focus a catalog episode: switch to it and play it from the start. The deep link is
   // (re-)opened whenever the recording isn't already loaded -- this also covers sources
   // the user closed inside the viewer (a local "already opened" cache would go stale).
   function focus(segmentId, url) {
     if (!viewer) {
-      queuedFocus = { segmentId, url }; // delivered by show() once the viewer is up
+      queuedAction = () => focus(segmentId, url); // delivered by show() once the viewer is up
       return;
     }
     want(segmentId, { play: true, force: true });
-    if (url && synced !== segmentId) {
-      try {
-        viewer.open(url);
-      } catch (error) {
-        console.warn("viewer.open failed:", error);
-      }
-    }
+    if (url && synced !== segmentId) openUrl(url);
   }
 
   // The recording the *user* is looking at right now (for panel <- viewer sync).
@@ -299,7 +306,24 @@ function viewerSlot(box) {
     }
   }
 
-  return { show, hide, want, refollow, focus, active, pending };
+  // Open a viewer deep link (e.g. the dataset's catalog table) as a *browsing* action:
+  // any in-flight recording switch is settled in place, so its retry loop can't yank
+  // the user back to the stream. Wanting a NEW recording later still navigates away.
+  function open(url) {
+    if (!url) return;
+    if (!viewer) {
+      queuedAction = () => open(url); // delivered by show() once the viewer is up
+      return;
+    }
+    clearInterval(retryTimer);
+    retryTimer = null;
+    if (wanted) synced = wanted;
+    followWanted = false;
+    playWanted = false;
+    openUrl(url);
+  }
+
+  return { show, hide, want, refollow, focus, active, pending, open };
 }
 
 // One always-on viewer for plain <div data-viewer> embeds (Deploy page), connected to
@@ -652,6 +676,10 @@ function initCollect(root) {
             <button type="button" class="save-btn" name="save" hidden>Save properties</button>
             <div class="episode-note" hidden></div>
           </div>
+          <div class="catalog-nav">
+            <button type="button" class="collect-btn outline" name="catalog" disabled>Browse the catalog</button>
+            <button type="button" class="collect-btn outline" name="episodes" disabled>Back to the episodes</button>
+          </div>
           <div class="panel-buttons">
             <button type="button" class="collect-btn primary record-btn" name="record" disabled>
               <span class="rec-dot"></span><span class="btn-label">Start recording</span></button>
@@ -704,6 +732,7 @@ function initCollect(root) {
   let busy = false;
 
   let episodes = []; // saved episodes from GET /episodes, oldest -> newest
+  let datasetUrl = null; // catalog deep link for the whole dataset (its episode table)
   let nextId = "episode_01"; // the id the NEXT recording will get (server-assigned)
   let selected = null; // stem of the episode the panel shows; null -> the active slot
   const drafts = new Map(); // stem -> {task, tag} unsaved edits (front-end only)
@@ -711,6 +740,7 @@ function initCollect(root) {
   let savedFlash = null; // stem whose Save button shows the "saved" checkmark
   let noteText = null; // {stem, text} green confirmation inside the card
   let lastViewerId = null; // last viewer-side active recording (panel <- viewer sync)
+  let browsing = false; // the user opened the catalog table; cleared by any real navigation
 
   // The browsable list: every saved episode, then ONE active slot -- the take being
   // recorded right now, or the upcoming (not yet recorded) episode.
@@ -799,6 +829,7 @@ function initCollect(root) {
     card.classList.add("slide-in");
     const item = current();
     if (openViewer && item.kind === "saved" && item.segment_id) {
+      browsing = false; // leaving the catalog (if it was up) for a concrete episode
       slot.focus(item.segment_id, item.viewer_url); // focus this episode in the viewer too
       lastViewerId = item.segment_id; // our own switch: don't mistake it for a user click
     }
@@ -815,6 +846,9 @@ function initCollect(root) {
     if (!active || active === lastViewerId) return;
     lastViewerId = active;
     if (active === state.recording_id) {
+      // While the catalog table is up the stream STAYS the active recording -- seeing
+      // it here is not a user click, and refollowing would yank the catalog away.
+      if (browsing) return;
       slot.want(state.recording_id); // re-point the slot in case it still wanted an episode
       slot.refollow();
       return;
@@ -822,6 +856,7 @@ function initCollect(root) {
     if (tab !== "record" || state.running) return;
     const match = episodes.find((entry) => active === entry.segment_id || active.endsWith(`-${entry.stem}`));
     if (!match) return;
+    browsing = false; // the user opened an episode from the table: real navigation
     slot.want(active, { play: true, force: true }); // a recorded episode always starts playing
     if (match.stem !== current().stem) select(match.stem, { openViewer: false });
   }
@@ -891,6 +926,10 @@ function initCollect(root) {
     el("dataset").disabled = busy || running;
     el("new_dataset").disabled = busy || running;
 
+    // Catalog navigation: both need a booted viewer; browsing needs registered episodes.
+    el("catalog").disabled = shownPort === null || !datasetUrl;
+    el("episodes").disabled = shownPort === null;
+
     // Record / stop.
     const record = el("record");
     record.classList.toggle("recording", running);
@@ -937,6 +976,7 @@ function initCollect(root) {
       // A dataset that doesn't exist yet: no episodes, and the first take is episode_01
       // (never the previous dataset's numbering).
       episodes = [];
+      datasetUrl = null;
       nextId = "episode_01";
     } else {
       try {
@@ -944,6 +984,7 @@ function initCollect(root) {
         if (gen !== episodesGen) return; // a newer dataset selection took over
         if (Array.isArray(data.episodes)) {
           episodes = data.episodes;
+          datasetUrl = data.dataset_url ?? null;
           nextId = data.next || "episode_01";
         }
       } catch {
@@ -980,6 +1021,7 @@ function initCollect(root) {
       // Going to the stream always (re-)enters following mode, even if the viewer was
       // already on it (the user may have scrubbed back in time).
       if (tab === "live" && state.recording_id) {
+        browsing = false;
         slot.want(state.recording_id);
         slot.refollow();
       }
@@ -1007,6 +1049,7 @@ function initCollect(root) {
     savedFlash = null;
     noteText = null;
     episodes = []; // never show the previous dataset's episodes while the fetch runs
+    datasetUrl = null;
     nextId = "episode_01";
     refreshEpisodes();
   });
@@ -1037,6 +1080,26 @@ function initCollect(root) {
     const list = items();
     const index = list.findIndex((entry) => entry.stem === current().stem);
     if (index < list.length - 1) select(list[index + 1].stem);
+  });
+
+  // Open the dataset's catalog table in the viewer: every collected episode at a glance
+  // (its "Open" links work too -- the panel follows via the viewer sync).
+  el("catalog").addEventListener("click", () => {
+    browsing = true;
+    lastViewerId = slot.active(); // whatever stays active underneath is not a user click
+    slot.open(datasetUrl);
+  });
+  // ...and an explicit way back: re-focus whatever the episode panel is on.
+  el("episodes").addEventListener("click", () => {
+    browsing = false;
+    const item = current();
+    if (item.kind === "saved" && item.segment_id) {
+      lastViewerId = item.segment_id;
+      slot.focus(item.segment_id, item.viewer_url);
+    } else if (state.recording_id) {
+      slot.want(state.recording_id);
+      slot.refollow();
+    }
   });
 
   el("save").addEventListener("click", async () => {
@@ -1082,6 +1145,7 @@ function initCollect(root) {
     // Back to the stream, in following mode -- even if the viewer was already on it
     // (a fresh take should always be seen from its head).
     if (next.recording_id) {
+      browsing = false;
       slot.want(next.recording_id);
       slot.refollow();
     }

@@ -507,7 +507,9 @@ def list_episodes(client: rr.catalog.CatalogClient, recordings_dir: Path, datase
 
         episodes.sort(key=sort_key)
         if episodes:
-            dataset_url = str(episodes[0]["viewer_url"]).split("?", 1)[0]
+            # The viewer's URI parser accepts /entry/<id> (the dataset's catalog table
+            # screen) but NOT a bare /dataset/<id> (only with a ?segment_id query).
+            dataset_url = str(episodes[0]["viewer_url"]).split("?", 1)[0].replace("/dataset/", "/entry/")
     return {"dataset": name, "episodes": episodes, "next": next_episode(recordings_dir, name), "dataset_url": dataset_url}
 
 
