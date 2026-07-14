@@ -1,10 +1,23 @@
 name: sync-upstream
 
-# Keeps this fork a faithful mirror of rerun-io/so100-hackathon.
+# Keeps this fork merged up to date with rerun-io/so100-hackathon.
 # rerun-io/so100-hackathon is upstream truth until the hackathon freeze.
-# Runs every 6h and on-demand. Fails loud (the run errors, visibly) if the
-# fork has diverged and cannot fast-forward from upstream — a divergence
-# means someone committed to the fork, which this repo is not supposed to carry.
+#
+# This fork carries one commit of our own (this workflow), so a plain
+# fast-forward is never possible once upstream moves — the branches are
+# permanently "diverged by 1" from the far side of that commit. A separate
+# repo (e.g. the org's .github repo) can't run this instead: its default
+# GITHUB_TOKEN has no write access to this sibling repo, and minting a
+# cross-repo PAT to store as a secret is a deliberate, human-approved step,
+# not something this workflow does on its own.
+#
+# So this stays in the fork and calls the merge-upstream API on itself,
+# where the fork's own GITHUB_TOKEN does have write access. That endpoint
+# fast-forwards when it can, and creates a clean merge commit when this
+# repo has commits upstream doesn't (i.e. every ordinary run from here on).
+# It only fails — loudly, the run goes red — on a true content conflict.
+#
+# Runs every 6h and on-demand.
 
 on:
   schedule:
@@ -18,10 +31,9 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Fast-forward main from upstream
+      - name: Merge upstream into main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh repo sync mission-robotics-ai/so100-hackathon \
-            --source rerun-io/so100-hackathon \
-            --branch main
+          gh api -X POST "repos/${{ github.repository }}/merge-upstream" \
+            -f branch=main
