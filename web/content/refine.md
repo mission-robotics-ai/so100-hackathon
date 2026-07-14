@@ -44,7 +44,7 @@ Pull a joint-position series into pandas (find entity paths in the viewer's tree
 `follower/position`):
 
 ```bash
-pixi run query-dataset -- --dataset my_task --episode episode_1 --entity follower/position
+pixi run query-dataset -- --dataset my_task --episode episode_01 --entity follower/position
 ```
 
 The same, from Python — the catalog speaks DataFusion, so this scales from one episode to
