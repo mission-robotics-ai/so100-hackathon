@@ -120,6 +120,10 @@ description = "Replay a recorded episode's action trajectory on the follower arm
 cmd = "python tools/apps/deploy_policy.py"
 description = "Run a trained MolmoAct2 policy on the follower arm via an inference server (--dry-run to watch predictions without motion)"
 
+[tool.pixi.tasks.check-cameras]
+cmd = "python tools/apps/check_cameras.py"
+description = "Camera health check: USB vs AVFoundation vs OpenCV layer diff, then stream every working camera into a Rerun viewer for a few seconds"
+
 [tool.pixi.tasks.log-so100]
 cmd = "python tools/apps/log_so100.py"
 description = "Stream live SO-100 arm telemetry into a Rerun viewer"

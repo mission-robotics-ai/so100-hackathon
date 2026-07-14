@@ -25,11 +25,18 @@ pixi run learn → http://localhost:3000
 ## CLI Set up: test and calibrate your robot
 
 ```bash
+pixi run check-cameras                    # cameras only: probe every layer, stream what works
 pixi run log-so100                        # smoke test: viewer + telemetry + cameras + animated URDF
 pixi run calibrate-so100 leader           # move the LEADER arm; follow the prompts
 pixi run calibrate-so100 follower         # same, for the follower
 pixi run teleop-so100                     # follower mirrors the leader (torque ON, Ctrl-C releases)
 ```
+
+If cameras are missing from the viewer, `check-cameras` names the failing layer and its
+fix: plugged in but invisible to every app (macOS camera stack wedged — reboot), not on
+USB at all (check the cable), permission denied (System Settings > Privacy & Security >
+Camera), or only skipped cameras found (the built-in webcam and iPhones are never
+auto-selected — plug in a recording webcam, or pass `--cameras <N>` to log-so100).
 
 Calibration is two steps per arm: hold the **middle pose** (match the gray target URDF,
 Enter), then **sweep every joint** through its range (Enter). It writes
