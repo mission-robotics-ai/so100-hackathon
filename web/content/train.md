@@ -18,8 +18,8 @@ pixi run export-lerobot -- --dataset <task> --repo-id <team>/<task>
 
 This writes a complete LeRobot v3 dataset to `datasets/<team>/<task>/` (parquet episodes +
 MP4-encoded camera videos + metadata). Include everything regardless of tag with `--tag ""`.
-The repo-id is just a name pair — give it a team-scoped name (`<team>/<task>`) so your
-dataset can't collide with another team's.
+`<team>` is a name you make up on the spot — your team name (nothing to register;
+it's a folder prefix that keeps your dataset from colliding with another team's).
 
 The mapping out of your recordings:
 
