@@ -36,7 +36,7 @@ executes the task sentence you trained on (try the exact strings you recorded wi
 first, then paraphrases). The same guide covers it, from the training run finishing to
 the arm moving:
 
-**→ [How fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-finetune-works)**
+**→ [Fine-tune on the hackathon guide](https://missionrobotics.ai/hackers/fine-tune)**
 
 One thing you do *not* need to redo: calibration. When you calibrated on the Set-up
 page, the same calibration was also written in LeRobot's format where the newt client
