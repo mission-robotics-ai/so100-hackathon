@@ -203,7 +203,11 @@ def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
         homed = bus.read_positions(attempts=5)
         drifted = [f"{name} reads {p}" for name, p in zip(DEFAULT_MOTOR_NAMES, homed, strict=True) if abs(p - half_turn) > 30]
         if drifted:  # the arm moved between the two reads, or a write was lost
-            raise RuntimeError(f"homing verification failed (expected ~{half_turn}): {', '.join(drifted)} — hold the arm still and retry")
+            raise RuntimeError(
+                f"Homing check failed — the arm doesn't look like it's in the middle pose "
+                f"(servos should read ~{half_turn} at center). Hold the arm still in the middle "
+                f"pose and retry. Readings: {', '.join(drifted)}"
+            )
         return homed
     except RuntimeError:
         try:
