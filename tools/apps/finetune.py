@@ -54,6 +54,11 @@ class Config:
     """[advanced] Ignore any existing checkpoint and retrain from scratch. Forwarded to
     ``newt finetune --fresh``."""
 
+    max_height: int = 720
+    """Cap the exported video frame height in pixels (0 = native resolution). Mirrors
+    ``export-lerobot`` -- the policy resizes frames far below this anyway, and smaller
+    frames export much faster."""
+
     calibration: Path | None = None
     """Follower calibration JSON for the degrees -> lerobot unit conversion. Default: the
     single follower calibration in ``--calibration-dir`` (only needed to disambiguate when
@@ -93,6 +98,7 @@ def main(config: Config) -> None:
         repo_id=repo_id,
         tag=config.tag,  # default "": every usable episode -- works before curation
         root=config.output_root,
+        max_height=config.max_height,
         calibration=config.calibration,
         calibration_dir=config.calibration_dir,
         catalog_port=config.catalog_port,
