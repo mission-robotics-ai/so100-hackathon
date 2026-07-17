@@ -27,7 +27,15 @@ from typing import Literal
 
 import tyro
 
-from so100_hackathon.calibration import DEFAULT_MOTOR_NAMES, lerobot_calibration_path, load_arm_kind, load_arm_ranges, save_lerobot_calibration
+from so100_hackathon.calibration import (
+    DEFAULT_MOTOR_NAMES,
+    lerobot_calibration_path,
+    load_arm_kind,
+    load_arm_ranges,
+    load_homing,
+    mechanical_range_from_homed,
+    save_lerobot_calibration,
+)
 from so100_hackathon.feetech import FeetechBus, detect_arm_ports, usb_id_from_port
 
 
@@ -62,16 +70,36 @@ def main(config: ExportCalibrationConfig) -> None:
     if ranges is None:
         raise SystemExit(f"{our_path} has no range-of-motion sweep (too old?) — re-run `pixi run calibrate-so100 {config.kind}`")
     range_min, range_max = ranges
-
-    # The homing offsets are servo-side (EEPROM), not in our JSON — read them off the arm.
-    bus = FeetechBus(port)
-    try:
-        homing_offsets = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
-        motor_ids = bus.motor_ids
-    finally:
-        bus.close()
-
     out_path = lerobot_calibration_path(config.kind, usb_id)
-    save_lerobot_calibration(out_path, DEFAULT_MOTOR_NAMES, motor_ids, homing_offsets, range_min, range_max)
-    print(f"wrote {out_path}")
+
+    homing_middle = load_homing(our_path)
+    if homing_middle is not None:
+        # Software-homed arm: the centering never went to the servo (firmware ignores it), so the
+        # LeRobot file carries homing_offset 0 and the swept range in the mechanical frame lerobot
+        # normalizes against host-side — no need to read anything off the servos.
+        mechanical = mechanical_range_from_homed(range_min, range_max, homing_middle)
+        if mechanical.wrapped:
+            names = ", ".join(DEFAULT_MOTOR_NAMES[i] for i in mechanical.wrapped)
+            raise SystemExit(
+                f"cannot build a LeRobot range for software-homed joints {names} — range crosses the mechanical tick seam; re-calibrate this arm"
+            )
+        save_lerobot_calibration(
+            out_path, DEFAULT_MOTOR_NAMES, (1, 2, 3, 4, 5, 6), [0] * len(homing_middle), mechanical.range_min, mechanical.range_max
+        )
+        print(f"wrote {out_path} (software-homed: homing_offset 0, mechanical ranges)")
+        for i, offset in mechanical.full_turn_offsets.items():
+            if offset:
+                print(
+                    f"NOTE: {DEFAULT_MOTOR_NAMES[i]} is a full-turn joint — a lerobot deploy client reads it {offset:+d} ticks off our zero (lerobot has no host-side homing for a full circle)."
+                )
+    else:
+        # Servo-homed arm: the offsets live in EEPROM — read them off the plugged-in arm.
+        bus = FeetechBus(port)
+        try:
+            homing_offsets = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
+            motor_ids = bus.motor_ids
+        finally:
+            bus.close()
+        save_lerobot_calibration(out_path, DEFAULT_MOTOR_NAMES, motor_ids, homing_offsets, range_min, range_max)
+        print(f"wrote {out_path}")
     print(f"LeRobot-ecosystem tools (incl. newt-starter-so101) pick it up with --robot.id={usb_id} — no lerobot-calibrate sweep needed.")

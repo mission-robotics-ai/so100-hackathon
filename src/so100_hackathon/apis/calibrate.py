@@ -27,6 +27,14 @@ the arm with exactly the calibration the datasets were recorded with, no second
 
     pixi run calibrate-so100 leader --rr-config.connect
     pixi run calibrate-so100 follower --rr-config.connect
+
+``--software-homing`` is the fallback for firmware that stores the Homing_Offset register
+but never applies it to Present_Position (so the servo-side step above silently does nothing).
+It skips every EEPROM write, captures the mechanical middle, and applies the half-turn homing
+host-side on every read and goal instead; the calibration records ``homing="software"`` so
+runtime paths do the same, and the LeRobot dual-write carries the centering as mechanical
+ranges with ``homing_offset = 0`` — which lerobot honors host-side — so deploy clients stay
+correct without depending on that register. Normal (servo-side) calibrations are unchanged.
 """
 
 from __future__ import annotations
@@ -46,9 +54,11 @@ import tyro
 from so100_hackathon.calibration import (
     DEFAULT_MOTOR_NAMES,
     TICKS_PER_REV,
+    MechanicalRange,
     MotorCalibration,
     fallback_calibration,
     lerobot_calibration_path,
+    mechanical_range_from_homed,
     save_calibration,
     save_lerobot_calibration,
 )
@@ -74,6 +84,14 @@ class CalibrateConfig:
     """Serial port of the arm to calibrate. Default: the single plugged-in arm; with
     several plugged in, wiggle a joint on the one you want and it's picked automatically."""
     calibration_dir: Path = Path("calibrations")
+    software_homing: bool = False
+    """Home in software instead of writing the servos' Homing_Offset register — for firmware
+    that stores the offset but never applies it to Present_Position (the middle pose would read
+    un-centered and every downstream pose would be wrong). Captures the middle pose and applies
+    the half-turn homing host-side on every read/goal; the calibration records ``homing=software``
+    so runtime paths do the same, and the LeRobot dual-write expresses the centering as mechanical
+    ranges (offset 0) so lerobot-driven deploy clients stay correct without touching that register.
+    Arms calibrated the normal (servo-side) way are unaffected."""
 
 
 class _LiveArmFeed:
@@ -223,6 +241,27 @@ def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
         raise
 
 
+def _capture_software_homing_middle(bus: FeetechBus) -> list[int]:
+    """Software homing: capture the raw mechanical middle pose WITHOUT touching servo EEPROM.
+
+    The servo-side ``_write_half_turn_homing`` can't be trusted on firmware that stores but never
+    applies Homing_Offset, so here the half-turn homing is applied host-side (``software_homed``,
+    wired into the bus by the caller). The only servo interaction is reading Present_Position, so
+    this works regardless of the offset-register bug.
+
+    Two reads confirm the arm is holding the middle pose (same >30-tick tolerance the servo path
+    uses); this check is pure arithmetic — the firmware can't fool it.
+    """
+    middle = bus.read_positions(attempts=5)
+    settle = bus.read_positions(attempts=5)
+    drifted = [f"{name} moved {abs(b - a)} ticks" for name, a, b in zip(DEFAULT_MOTOR_NAMES, middle, settle, strict=True) if abs(b - a) > 30]
+    if drifted:
+        raise RuntimeError(
+            f"Middle-pose capture failed — the arm moved while being read. Hold it still in the middle pose and retry. {', '.join(drifted)}"
+        )
+    return middle
+
+
 def _pick_arm_by_wiggle(ports: tuple[str, ...]) -> str:
     """Several arms are plugged in: identify one physically instead of by port name."""
     buses = {port: FeetechBus(port) for port in ports}
@@ -328,17 +367,27 @@ def main(config: CalibrateConfig) -> None:
 
     print(f"\ncalibrating {config.kind} {usb_id} on {port} -> {out_path}")
     print("in the viewer: GRAY arm = the target pose to match (a live model appears after step 1)\n")
+    homing_middle: list[int] | None = None  # set (raw mechanical middle) only in software-homing mode
     try:
         announce_phase("middle")
         input("1/2  move the arm to the MIDDLE of its range of motion (match the gray target), then press Enter...")
         feed.require_responding()  # make sure the arm is actually answering before touching EEPROM
-        # Half-turn homing (lerobot): written to the servos, so KEEP THE ARM STILL here.
+        # Homing captures/writes at the middle pose, so KEEP THE ARM STILL here.
         feed.pause()
-        bus.set_torque(False)  # clears Lock so the EEPROM writes below land (torque is already off)
-        raw_middle = _write_half_turn_homing(bus)
+        bus.set_torque(False)  # torque off to move the arm by hand (also clears Lock for the servo-side EEPROM writes)
+        if config.software_homing:
+            # Firmware ignores Homing_Offset: home host-side instead. Capture the mechanical middle,
+            # wire the transform into the bus, and from here read_positions returns HOMED ticks —
+            # so the rest of the flow (display model, sweep, ranges) is identical to the servo path.
+            homing_middle = _capture_software_homing_middle(bus)
+            bus.enable_software_homing(homing_middle)
+            raw_middle = bus.read_positions(attempts=5)
+            print(f"     software homing: captured middle {homing_middle} — reads/goals now home host-side; middle reads {raw_middle}")
+        else:
+            raw_middle = _write_half_turn_homing(bus)
+            print(f"     homing offsets written to the servos — middle pose now reads {raw_middle}")
         feed.reset_ranges()  # while still paused, so no stale pre-homing tick can leak into the sweep
         feed.resume()
-        print(f"     homing offsets written to the servos — middle pose now reads {raw_middle}")
 
         # From here the homing is known, so a live model is trustworthy: show it
         # mirroring the real arm (also instantly reveals any mirrored joint).
@@ -376,35 +425,55 @@ def main(config: CalibrateConfig) -> None:
             if i != WRIST_ROLL_INDEX and not (0 <= range_min[i] <= range_max[i] < TICKS_PER_REV and range_max[i] - range_min[i] >= MIN_SWEEP_TICKS)
         ]
         if unswept:
+            homed_note = (
+                "No calibration was written (nothing has been written to the servos)"
+                if config.software_homing
+                else "No limits or calibration were written (the homing offsets were)"
+            )
             raise SystemExit(
-                f"sweep incomplete for: {', '.join(unswept)} (each joint needs >= {MIN_SWEEP_TICKS} ticks of motion). "
-                "No limits or calibration were written (the homing offsets were) — re-run and sweep every joint fully."
+                f"sweep incomplete for: {', '.join(unswept)} (each joint needs >= {MIN_SWEEP_TICKS} ticks of motion). {homed_note} — re-run and sweep every joint fully."
             )
-        # Servo-side motion limits from the sweep (lerobot parity). Also overwrites stale
-        # limits a previous lerobot calibration may have left, which no longer line up
-        # once the homing offsets above changed.
         feed.pause()
-        try:
-            for i, motor_id in enumerate(bus.motor_ids):
-                bus.write_position_limits(motor_id, range_min[i], range_max[i])
-        except RuntimeError as error:
-            # The sweep data is good; don't throw away the whole session over a flaky write.
-            print(
-                f"WARNING: writing servo position limits failed ({error}) — saving the calibration anyway; re-run if motion seems restricted",
-                flush=True,
-            )
-        # Read the servo-side homing offsets back for the LeRobot-format dual-write below.
-        # Our own JSON stores homing_offset=0 (the real offsets live in EEPROM), but the
-        # LeRobot file must mirror EEPROM exactly — see save_lerobot_calibration.
-        try:
-            homing_offsets = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
-        except RuntimeError as error:
-            homing_offsets = None
-            print(
-                f"WARNING: reading homing offsets back failed ({error}) — skipping the LeRobot-format copy; "
-                f"emit it later with: pixi run export-calibration -- {config.kind}",
-                flush=True,
-            )
+        homing_offsets: list[int] | None = None  # servo-side EEPROM offsets, read back for the LeRobot copy (servo path only)
+        mechanical: MechanicalRange | None = None  # swept range in raw mechanical ticks for the LeRobot copy (software path only)
+        if config.software_homing:
+            # No servo-side writes at all. Position_Limit is EEPROM too (same unreliable firmware),
+            # and in software mode the servo works in the mechanical frame while our limits are homed —
+            # a servo-frame limit would be both wrong and undependable. Motion limits are enforced
+            # host-side (teleop/replay clamp goals to range_min/range_max); the LeRobot file carries the
+            # mechanical range so a lerobot deploy client clamps and normalizes there too.
+            print("software homing: motion limits enforced host-side only (servo Position_Limit registers left untouched)", flush=True)
+            mechanical = mechanical_range_from_homed(range_min, range_max, homing_middle)  # type: ignore[arg-type]  # homing_middle is set in this branch
+            if mechanical.wrapped:
+                names = ", ".join(DEFAULT_MOTOR_NAMES[i] for i in mechanical.wrapped)
+                raise SystemExit(
+                    f"software homing can't build a LeRobot range for: {names} — the swept range crosses the servo's 0/4095 tick "
+                    "seam in mechanical space (the joint's middle sits too close to the tick wrap). Re-seat the arm so the middle "
+                    "pose is farther from the wrap, or calibrate this arm servo-side (without --software-homing)."
+                )
+        else:
+            # Servo-side motion limits from the sweep (lerobot parity). Also overwrites stale limits a
+            # previous lerobot calibration may have left, which no longer line up once the offsets changed.
+            try:
+                for i, motor_id in enumerate(bus.motor_ids):
+                    bus.write_position_limits(motor_id, range_min[i], range_max[i])
+            except RuntimeError as error:
+                # The sweep data is good; don't throw away the whole session over a flaky write.
+                print(
+                    f"WARNING: writing servo position limits failed ({error}) — saving the calibration anyway; re-run if motion seems restricted",
+                    flush=True,
+                )
+            # Read the servo-side homing offsets back for the LeRobot-format dual-write below.
+            # Our own JSON stores homing_offset=0 (the real offsets live in EEPROM), but the
+            # LeRobot file must mirror EEPROM exactly — see save_lerobot_calibration.
+            try:
+                homing_offsets = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
+            except RuntimeError as error:
+                print(
+                    f"WARNING: reading homing offsets back failed ({error}) — skipping the LeRobot-format copy; "
+                    f"emit it later with: pixi run export-calibration -- {config.kind}",
+                    flush=True,
+                )
     finally:
         feed.stop()
         bus.close()
@@ -429,14 +498,28 @@ def main(config: CalibrateConfig) -> None:
         )
         print(f"{name}: middle={raw_middle[i]} range=[{range_min[i]}, {range_max[i]}] (span {span_deg:.0f} deg)")
 
-    save_calibration(out_path, calibration, kind=config.kind, range_min=range_min, range_max=range_max)
-    # Dual-write: the same numbers in LeRobot's format, at the path LeRobot-ecosystem
+    save_calibration(out_path, calibration, kind=config.kind, range_min=range_min, range_max=range_max, homing_middle=homing_middle)
+    # Dual-write: the same calibration in LeRobot's format, at the path LeRobot-ecosystem
     # tools read from. An arm calibrated here can then be driven by the newt-starter /
     # newt SDK without a second calibration — so the joint angles a checkpoint was
     # trained on (our export) and the ones it commands at inference mean the same pose.
-    if homing_offsets is not None:
-        lerobot_path = lerobot_calibration_path(config.kind, usb_id)
+    lerobot_path = lerobot_calibration_path(config.kind, usb_id)
+    if mechanical is not None:  # software homing: centering lives in the mechanical range, offset 0 (lerobot homes host-side)
+        save_lerobot_calibration(
+            lerobot_path, DEFAULT_MOTOR_NAMES, bus.motor_ids, [0] * len(bus.motor_ids), mechanical.range_min, mechanical.range_max
+        )
+        print(f"also wrote {lerobot_path} (LeRobot format — homing_offset 0, mechanical ranges; lerobot normalizes host-side against them)")
+        for i, offset in mechanical.full_turn_offsets.items():
+            if offset:  # a full-turn joint whose centering lerobot can't encode host-side
+                print(
+                    f"NOTE: {DEFAULT_MOTOR_NAMES[i]} is a full-turn joint — a lerobot deploy client reads it {offset:+d} ticks "
+                    f"({offset * 360.0 / TICKS_PER_REV:+.0f} deg) off our zero (lerobot applies no host-side homing to a full "
+                    "circle). This is the one joint software homing can't fully substitute for servo homing.",
+                    flush=True,
+                )
+    elif homing_offsets is not None:  # servo homing: EEPROM offsets + homed ranges
         save_lerobot_calibration(lerobot_path, DEFAULT_MOTOR_NAMES, bus.motor_ids, homing_offsets, range_min, range_max)
         print(f"also wrote {lerobot_path} (LeRobot format — lerobot/newt tools find it with --robot.id={usb_id})")
-    instruct(f"# {arm_label.capitalize()} calibrated ✓\n\nSaved to `{out_path}` (and to the servos themselves).")
+    saved_where = f"Saved to `{out_path}`." if config.software_homing else f"Saved to `{out_path}` (and to the servos themselves)."
+    instruct(f"# {arm_label.capitalize()} calibrated ✓\n\n{saved_where}")
     print(f"\nwrote {out_path} — verify with: pixi run log-so100")

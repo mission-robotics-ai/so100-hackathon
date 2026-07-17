@@ -28,7 +28,7 @@ os.environ.setdefault("RERUN_INSECURE_SKIP_HOST_CHECK", "1")
 
 import rerun as rr  # noqa: E402 - the env var above must be set before use
 
-from so100_hackathon.calibration import MotorCalibration, load_arm_kind, load_arm_ranges, load_calibration  # noqa: E402
+from so100_hackathon.calibration import MotorCalibration, load_arm_kind, load_arm_ranges, load_calibration, load_homing  # noqa: E402
 from so100_hackathon.feetech import FeetechBus, detect_arm_ports, usb_id_from_port  # noqa: E402
 from so100_hackathon.takes import APP_ID  # noqa: E402
 
@@ -91,7 +91,14 @@ def open_follower(calibration_dir: Path, port: str | None) -> Follower:
         raise SystemExit(f"multiple follower candidates ({', '.join(c[1] for c in candidates)}); pass --port to pick one")
     chosen_port, usb_id, calibration, (range_min, range_max) = candidates[0]
     print(f"follower: {usb_id} on {chosen_port}")
-    return Follower(name=usb_id, bus=FeetechBus(chosen_port), calibration=calibration, range_min=range_min, range_max=range_max)
+    bus = FeetechBus(chosen_port)
+    # A software-homed arm needs the host-side transform applied to reads and goal writes; the
+    # recorded trajectory and range are in the homed frame, so calibrated_from_raw stays unchanged.
+    homing_middle = load_homing(calibration_dir / f"{usb_id}.json")
+    if homing_middle is not None:
+        bus.enable_software_homing(homing_middle)
+        print(f"follower: {usb_id} is software-homed — homing applied host-side")
+    return Follower(name=usb_id, bus=bus, calibration=calibration, range_min=range_min, range_max=range_max)
 
 
 def read_calibrated(follower: Follower) -> list[float]:

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 import scservo_sdk as scs
 
+from so100_hackathon.calibration import software_homed, software_mechanical
+
 BAUD_RATE = 1_000_000
 PROTOCOL_END = 0  # STS/SMS series byte order
 
@@ -84,6 +86,10 @@ class FeetechBus:
         # the FIRST reply of a sync read, so without this a concurrent write can interleave
         # with the remaining replies on the half-duplex line.
         self.lock = threading.Lock()
+        # Software homing: raw mechanical middle per motor (same order as motor_ids), or None for
+        # servo-homed / uncalibrated arms. When set, read_telemetry returns HOMED position_raw and
+        # sync_write_goal takes HOMED goals — emulating a servo Homing_Offset this firmware ignores.
+        self._homing_middle: list[int] | None = None
         self._open()
 
     def _open(self) -> None:
@@ -113,12 +119,15 @@ class FeetechBus:
             raise RuntimeError(f"{self.port}: sync read failed: {self.packet_handler.getTxRxResult(comm)}")
 
         telemetry: list[MotorTelemetry] = []
-        for motor_id in self.motor_ids:
+        for index, motor_id in enumerate(self.motor_ids):
             if not self.sync_read.isAvailable(motor_id, BLOCK_START, BLOCK_LENGTH):
                 raise RuntimeError(f"{self.port}: motor {motor_id} missing from sync read reply")
+            position_raw = self.sync_read.getData(motor_id, ADDR_PRESENT_POSITION, 2)
+            if self._homing_middle is not None:  # software homing: report the homed tick a servo offset would have
+                position_raw = software_homed(position_raw, self._homing_middle[index])
             telemetry.append(
                 MotorTelemetry(
-                    position_raw=self.sync_read.getData(motor_id, ADDR_PRESENT_POSITION, 2),
+                    position_raw=position_raw,
                     speed_ticks_s=float(_sign_magnitude(self.sync_read.getData(motor_id, ADDR_PRESENT_SPEED, 2), 15)),
                     load_pct=_sign_magnitude(self.sync_read.getData(motor_id, ADDR_PRESENT_LOAD, 2), 10) * 0.1,
                     voltage_v=self.sync_read.getData(motor_id, ADDR_PRESENT_VOLTAGE, 1) * 0.1,
@@ -252,6 +261,19 @@ class FeetechBus:
     def read_homing_offset(self, motor_id: int) -> int:
         return _sign_magnitude(self._read_register(motor_id, ADDR_HOMING_OFFSET, 2), 11)
 
+    def enable_software_homing(self, middle: list[int]) -> None:
+        """Home this arm in software instead of via the servo's Homing_Offset register.
+
+        ``middle`` is the raw mechanical tick at the calibration middle pose, per motor (same
+        order as ``motor_ids``). After this call ``read_telemetry``/``read_positions`` return
+        HOMED ticks (``HOMED_CENTER`` at the middle) and ``sync_write_goal`` accepts HOMED goals,
+        so every consumer sees exactly what a servo-side offset would have produced — needed for
+        firmware that stores the offset register but never applies it to Present_Position.
+        """
+        if len(middle) != len(self.motor_ids):
+            raise ValueError(f"software homing needs one middle per motor: got {len(middle)} for {len(self.motor_ids)} motors")
+        self._homing_middle = list(middle)
+
     def write_position_limits(self, motor_id: int, range_min: int, range_max: int) -> None:
         """Servo-side motion limits (EEPROM, torque off) — lerobot writes the swept range here.
 
@@ -262,7 +284,14 @@ class FeetechBus:
         self._write_register_verified(motor_id, ADDR_MAX_POSITION_LIMIT, range_max, 2)
 
     def sync_write_goal(self, positions: list[int]) -> None:
-        """One Goal_Position sync-write for all motors (fire-and-forget, servos send no reply)."""
+        """One Goal_Position sync-write for all motors (fire-and-forget, servos send no reply).
+
+        ``positions`` are HOMED ticks when software homing is on (mirroring what ``read_telemetry``
+        returns); they are mapped back to raw mechanical ticks here so the servo — which never
+        applied the offset — moves to the intended pose.
+        """
+        if self._homing_middle is not None:
+            positions = [software_mechanical(position, middle) for position, middle in zip(positions, self._homing_middle, strict=True)]
         with self.lock:
             self.sync_write.clearParam()
             for motor_id, position in zip(self.motor_ids, positions, strict=True):

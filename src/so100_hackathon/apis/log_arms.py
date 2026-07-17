@@ -26,7 +26,7 @@ import rerun as rr
 import rerun.blueprint as rrb
 
 from so100_hackathon.blueprint import create_blueprint
-from so100_hackathon.calibration import MotorCalibration, fallback_calibration, load_arm_kind, load_arm_ranges, load_calibration
+from so100_hackathon.calibration import MotorCalibration, fallback_calibration, load_arm_kind, load_arm_ranges, load_calibration, load_homing
 from so100_hackathon.cameras import CameraStreamer, FrameSink, detect_camera_indices
 from so100_hackathon.feetech import FeetechBus, MotorTelemetry, detect_arm_ports, usb_id_from_port
 from so100_hackathon.rerun_config import LiveViewerConfig
@@ -187,10 +187,18 @@ def _open_arms(config: LogArmsConfig, rec: rr.RecordingStream) -> list[Arm]:
                 center_angles_deg=config.joint_offsets_deg,
                 color=MATTE_BLACK,
             )
+        bus = FeetechBus(res.port)
+        # Software-homed arms (firmware that ignores the servo Homing_Offset): the bus applies the
+        # half-turn homing host-side, so read_telemetry/sync_write_goal see the same homed ticks a
+        # servo offset would have produced — and calibrated_from_raw below is unchanged.
+        homing_middle = load_homing(config.calibration_dir / f"{usb_id_from_port(res.port)}.json")
+        if homing_middle is not None:
+            bus.enable_software_homing(homing_middle)
+            print(f"{res.name}: software-homed calibration — homing applied host-side", flush=True)
         arms.append(
             Arm(
                 name=res.name,
-                bus=FeetechBus(res.port),
+                bus=bus,
                 calibration=res.calibration,
                 urdf=urdf,
                 is_leader=bool(res.is_leader),
