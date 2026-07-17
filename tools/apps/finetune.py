@@ -100,8 +100,6 @@ def main(config: Config) -> None:
     )
 
     print(f"exporting '{config.dataset}' -> {output}")
-    if not config.tag:
-        print('including all usable episodes regardless of tag (pass --tag "Good episode" to train on curated episodes only)')
     result = export_dataset(export_config)
 
     # Honesty: episodes the exporter dropped for a missing stream. Loud, before we launch,
@@ -111,6 +109,11 @@ def main(config: Config) -> None:
             f"\n{result.staged} of {result.total} episodes usable -- the other {len(result.skipped)} "
             "are missing a stream and were skipped (see the hackathon troubleshooting page)."
         )
+
+    # Say the curation situation out loud on the default (no-tag) path, with the real count,
+    # so a team that meant to train on curated takes only isn't surprised (Refine's tags are live).
+    if not config.tag:
+        print(f'including all {result.staged} usable episodes regardless of tag (pass --tag "Good episode" to train on curated episodes only).')
 
     command = ["newt", "finetune", "--dataset", f"./datasets/{repo_id}"]
     if config.steps is not None:
