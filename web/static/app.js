@@ -409,7 +409,7 @@ function calibrateNextLabel(setup) {
 function calibrateGuidance(setup) {
   const arm = setup.arm === "follower" ? "follower" : "leader";
   if (setup.phase === "wiggle") {
-    return `Wiggle the ${arm} arm so the right port is picked \u2014 it advances by itself.`;
+    return `Start with both arms folded at rest, then wiggle the ${arm} arm so the right port is picked \u2014 it advances by itself.`;
   }
   if (setup.phase === "middle") {
     return `Match the gray target pose with the ${arm} arm (this defines 0\u00b0 for every joint), then press NEXT STEP.`;

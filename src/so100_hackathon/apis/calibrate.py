@@ -396,7 +396,7 @@ def main(config: CalibrateConfig) -> None:
     instruct(
         f"# Move the {arm_label.upper()}\n\n"
         f"## Step 1 of 2 — match the target pose\n\n"
-        f"Move your **{arm_label}** by hand to match the **gray target**: every joint at the middle of its range of motion. "
+        f"Start with the arm folded at rest, then move your **{arm_label}** by hand to match the **gray target**: every joint at the middle of its range of motion. "
         f"This pose becomes 0° for every joint.\n\n"
         f"When it matches, continue (or press Enter in the terminal)."
     )
