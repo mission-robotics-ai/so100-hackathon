@@ -7,8 +7,11 @@ for training, and replay back on the arm.
 
 ## Welcome
 
-Everything runs through [Pixi](https://pixi.sh) — install it, then clone the repo and
-install its environment:
+Everything runs through [Pixi](https://pixi.sh), a fast package manager that handles
+both conda and PyPI dependencies (using [uv](https://docs.astral.sh/uv/) under the hood
+for the latter) from a single lockfile — no separate conda/pip/venv setup, and every
+command below is a `pixi run` task. Docs: <https://pixi.prefix.dev/latest/>. Install it,
+then clone the repo and install its environment:
 
 ```bash
 curl -fsSL https://pixi.sh/install.sh | sh
