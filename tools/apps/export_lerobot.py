@@ -300,6 +300,7 @@ def export_dataset(config: Config) -> ExportResult:
             raise SystemExit("nothing to export")
         size_note = f"frames capped at {config.max_height}px tall" if config.max_height else "native resolution"
         print(f"writing {len(staged)} episode(s) + encoding videos ({size_note}; local, nothing uploads without --push)...", flush=True)
+        print("note: the export is all-or-nothing -- if it fails partway, delete the output and re-run (episodes are not resumable).", flush=True)
 
         motor_names = list(DEFAULT_MOTOR_NAMES)
         dim = int(np.load(stage_dir / staged[0]["dir"] / "action.npy").shape[1])

@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import tyro
@@ -68,6 +69,10 @@ class Config:
     """Export, then print the ``newt finetune`` command instead of running it (nothing
     uploads)."""
 
+    yes: bool = False
+    """Skip the confirmation prompt before deleting a previous export of this dataset
+    (required when running non-interactively, e.g. from a script)."""
+
     calibration_dir: Path = Path("calibrations")
     """Where follower calibrations live (mirrors ``export-lerobot``)."""
 
@@ -87,10 +92,17 @@ def main(config: Config) -> None:
     repo_id = f"{NAMESPACE}/{config.dataset}"
     output = config.output_root / repo_id
 
-    # Re-export on every run. Episodes are small, and the catalog -- not a stale copy on
-    # disk -- is the source of truth for what you'd want to train on. Only ever removes our
-    # own ``local/<dataset>`` folder, never anything you named.
+    # Re-export on every run. The catalog -- not a stale copy on disk -- is the source of
+    # truth for what you'd want to train on. Only ever removes our own ``local/<dataset>``
+    # folder, never anything you named -- but ask first: the export is all-or-nothing, so
+    # deleting trades a finished dataset for a fresh run that must complete to replace it.
     if output.exists():
+        if not config.yes:
+            if not sys.stdin.isatty():
+                raise SystemExit(f"{output} exists from a previous export; refusing to delete it without confirmation (pass --yes to allow)")
+            reply = input(f"{output} exists from a previous export -- delete it and re-export from the catalog? [y/N] ")
+            if reply.strip().lower() not in ("y", "yes"):
+                raise SystemExit("aborted -- nothing was deleted (train on the existing export directly with: newt finetune --dataset ./datasets/" + repo_id + ")")
         shutil.rmtree(output)
 
     export_config = ExportConfig(
