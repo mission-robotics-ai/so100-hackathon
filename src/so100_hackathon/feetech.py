@@ -221,6 +221,21 @@ class FeetechBus:
         if failures:
             raise RuntimeError(f"{self.port}: torque disable failed on {len(failures)} motor(s): {failures[0]}")
 
+    def calibrate_center(self, motor_id: int) -> None:
+        """Feetech CalibrationOfs: take the CURRENT held position as center (2048) and let the
+        servo compute AND apply Homing_Offset itself, by writing the magic value 128 to
+        Torque_Enable (addr 40). Documented in the SDK (SMS_STS.cpp CalibrationOfs =
+        writeByte(id, 40, 128)) and rediscovered in lerobot #607 / #1342. Hold the joint at the
+        reference pose and call with torque off.
+
+        This is a RAM command — no Lock, no EEPROM commit — so unlike a manual Homing_Offset write
+        it has no store-vs-apply gap: the firmware applies the offset in the same command. Written
+        with the plain (unverified) writer because 128 is a one-shot command, not a value that
+        reads back. Firmware-version variance exists (lerobot #1010): a servo whose firmware lacks
+        the command leaves the offset unchanged, which the caller's homed-center verify catches.
+        """
+        self._write_register(motor_id, ADDR_TORQUE_ENABLE, 128, 1)
+
     def configure_follower_control(self) -> None:
         """Configure the servos the way lerobot's SO follower does. Call while torque is off.
 

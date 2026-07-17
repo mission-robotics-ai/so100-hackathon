@@ -181,26 +181,23 @@ def _sweep_until_enter(feed: _LiveArmFeed) -> None:
 
 
 def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
-    """lerobot's set_half_turn_homings: write servo-side Homing_Offset so the CURRENT pose
-    (the middle of the range of motion) reads ~2047 on every motor.
+    """Feetech CalibrationOfs: write 128 to each servo's Torque_Enable (addr 40) with the joint
+    held at the middle of its range, and the firmware takes the current position as center (2048),
+    computing AND applying Homing_Offset itself in the same command.
 
-    This puts the 0/4095 tick wrap half a revolution away from the middle, so no joint can
-    cross it during the range sweep — software-only offsets can't guarantee that, and an
-    arm whose middle happens to sit near the wrap point gets +-360 deg jumps (seen on real
-    hardware). Returns the re-read (homed) middle positions.
+    This supersedes lerobot's manual "write Homing_Offset = mechanical - 2047" dance, which on this
+    hardware hit a store-vs-apply gap: the offset register read back correct while Present_Position
+    lagged hundreds of ms or never re-zeroed. The 128 write is a RAM command (SMS_STS.cpp
+    CalibrationOfs; lerobot #607 / #1342) — no Lock, no EEPROM commit, no gap.
 
-    Both the mechanical-center capture and the post-write verify are stability-gated reads.
-    This firmware applies a written Homing_Offset to Present_Position hundreds of ms LATE, so a
-    single read taken right after a write can catch a transient — a straggler mid-apply, or a
-    PRIOR run's restored offset still draining out of the readout. That silently corrupts the
-    capture, and every offset derived from it. Each read therefore settles, then polls until two
-    consecutive reads agree on every motor. If the verify is stable but still off center, a brief
-    torque-enable kick is tried (some Feetech firmware only latches a stored offset on a torque
-    edge) before raising, with a diagnostic carrying the stored offsets and snapshots so the cause
-    (firmware-not-applying vs. arm-moved) is readable off the error.
+    Centering on ~2047 puts the 0/4095 tick wrap half a revolution from the middle, so no joint can
+    cross it during the range sweep (an arm whose middle sits near the wrap gets +-360 deg jumps,
+    seen on real hardware). Returns the re-read (homed) middle positions.
 
-    On any failure the previous offsets are restored (best-effort), so a transient bus
-    flake doesn't leave the servos half-homed with the on-disk calibration silently stale.
+    The verify is a stability-gated read (settle, then poll until two consecutive reads agree) —
+    belt-and-suspenders against slow-apply firmware and against the arm being moved mid-read. On
+    failure the previous offsets are restored the manual way (best-effort), so a transient bus flake
+    doesn't leave the servos half-homed with the on-disk calibration silently stale.
     """
     half_turn = TICKS_PER_REV // 2 - 1  # 2047
     settle_s = 0.5  # let a just-written offset START applying before we judge; this firmware applies LATE
@@ -215,14 +212,13 @@ def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
     def read_stable(what: str) -> list[int]:
         """Read positions until two consecutive reads agree within stable_tol on every motor.
 
-        This firmware applies a written Homing_Offset to Present_Position LATE (2026-07-16, real
-        follower: offsets read back correct, but Present_Position caught up hundreds of ms later —
-        wrist_roll 1766 -> 622 between an immediate and a 300ms read). A single read right after a
-        write can therefore capture a transient: a straggler mid-apply, or a PRIOR run's restored
-        offset still draining out of the readout (the gripper drifted a stale-offset-constant -235
-        ticks in BOTH failing runs — not hand motion). Both the zero-offset capture and the verify
-        are corrupted by this. Settle first so the apply has begun, then poll until it stops moving;
-        a real hand motion also never settles. Raise loud with the last two reads if it never does.
+        Belt-and-suspenders against slow-apply firmware and against the arm being moved mid-read.
+        Feetech firmware has been seen to apply a homing change to Present_Position LATE (2026-07-16,
+        real follower: a homing register read back correct while Present_Position caught up hundreds
+        of ms later — wrist_roll 1766 -> 622 between an immediate and a 300ms read), so a single read
+        right after the center command can catch a transient. Settle first so any apply has begun,
+        then poll until it stops moving; a real hand motion also never settles. Raise loud with the
+        last two reads if it never does.
         """
         time.sleep(settle_s)
         prev = bus.read_positions(attempts=5)
@@ -242,56 +238,42 @@ def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
 
     previous = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
     try:
+        # Feetech CalibrationOfs (addr 40 <- 128): the firmware takes the current held pose as
+        # center (2048) and computes+applies Homing_Offset itself, in one RAM command — no Lock,
+        # no EEPROM commit, no store-vs-apply gap. Supersedes the manual "offset = mechanical -
+        # 2047" write, which on this hardware stored the offset but lagged/never applied it.
         for motor_id in bus.motor_ids:
-            bus.write_homing_offset(motor_id, 0)
-        # Capture the TRUE mechanical center: wait out the zero-offset apply (and any stale offset
-        # from a prior run still draining from Present_Position) before reading — a polluted capture
-        # writes a wrong offset on every motor, which is the bug this fix closes.
-        mechanical = read_stable("capturing the mechanical center")
-        for motor_id, mech in zip(bus.motor_ids, mechanical, strict=True):
-            bus.write_homing_offset(motor_id, mech - half_turn)
+            bus.calibrate_center(motor_id)
+        # The 128 command can leave torque engaged on some firmware; the by-hand range sweep that
+        # follows needs it OFF, and disabling torque doesn't disturb the applied offset.
+        bus.set_torque(False)
         homed = read_stable("verifying the homed center")
         if not off_center(homed):
             return homed
 
-        # Stable but not centered: the offset is stored (write-verify passed) and has finished
-        # applying (read_stable waited it out), yet Present_Position still isn't ~half_turn.
-        # Torque kick: some Feetech firmware only latches a stored Homing_Offset into Present_Position
-        # on a torque-enable edge. Toggle on->off back-to-back (set_torque writes TORQUE_ENABLE then
-        # LOCK per motor) — kept brief so the servo can't fight the hand holding the middle pose.
-        bus.set_torque(True)
-        bus.set_torque(False)
-        post_kick = read_stable("verifying after the torque kick")
-        if not off_center(post_kick):
-            return post_kick
-
-        # Still off center after the kick. Fail loud with the full diagnostic (it caught the
-        # capture-pollution and the slow-apply on real hardware): stored offsets at their intended
-        # values + snapshots that BARELY MOVE => firmware isn't applying the stored offset (needs a
-        # different trigger); snapshots that swing => the arm moved.
+        # Off center after the documented command. Fail loud with the firmware's OWN computed
+        # offsets (addr 31 read-backs, sign-magnitude decoded by read_homing_offset) + the stable
+        # snapshot, so the cause is readable: offsets still ~0/unchanged => this servo's firmware
+        # doesn't honor the addr-40 center command (Feetech firmware-version variance, lerobot
+        # #1010); offsets computed but positions off => the arm moved after the command.
         stored = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
 
         def row(label: str, values: list[int]) -> str:
             return f"  {label:<10} " + "  ".join(f"{name}={v}" for name, v in zip(DEFAULT_MOTOR_NAMES, values, strict=True))
 
         raise RuntimeError(
-            "Homing check failed — after writing Homing_Offset the servos should read "
-            f"~{half_turn} at center, but Present_Position did not re-zero. Off center: {', '.join(off_center(post_kick))}.\n"
-            "If the stored offsets below are their intended values and the snapshots barely change, this "
-            "firmware batch is storing Homing_Offset without applying it to Present_Position (settle + torque "
-            "kick didn't trigger it) — re-run, and if it persists this arm needs a different homing-apply "
-            "trigger. If instead the snapshots swing, the arm moved between reads — hold it still and retry.\n"
-            + row("stored", stored)
-            + "\n"
-            + row("stable", homed)
-            + "\n"
-            + row("post-kick", post_kick)
+            "Homing check failed — after the CalibrationOfs command (128 -> Torque_Enable) the servos "
+            f"should read ~{half_turn} at center, but Present_Position didn't. Off center: {', '.join(off_center(homed))}.\n"
+            "If the stored offsets below are ~0 or unchanged, this arm's firmware may not honor the addr-40 "
+            "center command (Feetech firmware-version variance, lerobot #1010) — hold center and re-run; if it "
+            "persists this arm needs the manual-offset path. If the offsets look computed but positions are "
+            "still off, the arm moved after the command — hold it still at center and retry.\n" + row("stored", stored) + "\n" + row("homed", homed)
         )
     except RuntimeError:
         try:
             for motor_id, offset in zip(bus.motor_ids, previous, strict=True):
                 bus.write_homing_offset(motor_id, offset)
-            time.sleep(settle_s)  # this firmware applies offsets late; don't exit mid-apply and pollute the next run's capture read
+            time.sleep(settle_s)  # this firmware applies offsets late; let the restored offsets settle rather than exit mid-apply
             print("homing failed — previous servo offsets restored, just re-run calibration", flush=True)
         except RuntimeError:
             print(
