@@ -17,6 +17,8 @@ cd so100-hackathon
 pixi install
 ```
 
+SDK fixes ship through the weekend — pull the latest with `git pull && pixi update newt`.
+
 Plug in the arm(s) — they show up as `/dev/cu.usbmodem<USB_ID>`.
 
 ## START HERE

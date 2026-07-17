@@ -66,6 +66,10 @@ class Config:
     calibration_dir: Path = Path("calibrations")
     """Where follower calibrations live (mirrors ``export-lerobot``)."""
 
+    tag: str = ""
+    """Filter episodes by curation tag (e.g. ``"Good episode"``). Default trains on every
+    usable episode regardless of tag, so the command works before any curation."""
+
     catalog_port: int = 51234
     """so100-server catalog port (mirrors ``export-lerobot``)."""
 
@@ -87,7 +91,7 @@ def main(config: Config) -> None:
     export_config = ExportConfig(
         dataset=config.dataset,
         repo_id=repo_id,
-        tag="",  # every usable episode, not just Good-tagged -- works before curation
+        tag=config.tag,  # default "": every usable episode -- works before curation
         root=config.output_root,
         calibration=config.calibration,
         calibration_dir=config.calibration_dir,
@@ -96,6 +100,8 @@ def main(config: Config) -> None:
     )
 
     print(f"exporting '{config.dataset}' -> {output}")
+    if not config.tag:
+        print('including all usable episodes regardless of tag (pass --tag "Good episode" to train on curated episodes only)')
     result = export_dataset(export_config)
 
     # Honesty: episodes the exporter dropped for a missing stream. Loud, before we launch,

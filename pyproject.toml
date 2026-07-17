@@ -40,7 +40,7 @@ markdown = ">=3.6"
 # hackers the whole toolchain. Pinned to a SHA for event-week safety: an upstream
 # push can't break a hacker's install mid-event. Core deps only (msgpack/httpx/
 # websockets/pillow/numpy) — the heavy [hardware]/[recording] extras stay out.
-newt = { git = "https://github.com/new-theory-research/newt-python.git", rev = "20f307767058179904d6a4b840149bd96c8bd60f" }
+newt = { git = "https://github.com/new-theory-research/newt-python.git", branch = "main" }
 
 # LeRobot pins an older rerun-sdk which conflicts with ours, so the export env is fully
 # isolated (no default feature). export_lerobot.py (default env) queries the catalog and
