@@ -181,7 +181,7 @@ run.
 
 Running a trained policy is NewTheory's side of the loop: once your `pixi run finetune`
 run is live, the `newt` SDK drives the follower directly (`Robot(model="<your-tag>")`) —
-see the [hackathon fine-tune guide](https://missionrobotics.ai/hackers/fine-tune).
+see the [call-your-model guide](https://missionrobotics.ai/hackers/call-your-model).
 An arm calibrated here is already set up for it (the dual-written calibration above);
 just make sure nothing else is holding the follower's serial port.
 

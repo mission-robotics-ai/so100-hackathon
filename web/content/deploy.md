@@ -33,10 +33,10 @@ follower.
 Deployment is NewTheory's side of the loop. Once your fine-tune is live, the `newt` SDK
 runs that loop against your arm directly — `Robot(model="<your-tag>")` and the follower
 executes the task sentence you trained on (try the exact strings you recorded with
-first, then paraphrases). The same guide covers it, from the training run finishing to
-the arm moving:
+first, then paraphrases). The guide picks up exactly where the training run finishes:
+calling your model by name and checking its action chunks, then on to the arm moving:
 
-**→ [Fine-tune on the hackathon guide](https://missionrobotics.ai/hackers/fine-tune)**
+**→ [Call your model on the hackathon guide](https://missionrobotics.ai/hackers/call-your-model)**
 
 One thing you do *not* need to redo: calibration. When you calibrated on the Set-up
 page, the same calibration was also written in LeRobot's format where the newt client
