@@ -210,6 +210,12 @@ class Config:
     first name, cam1 the second, ...). MolmoAct2's SO-100/101 checkpoints expect ``top``
     and ``side`` third-person views; extra cameras keep their camNN names."""
 
+    max_height: int = 720
+    """Cap the exported video frame height in pixels; taller camera streams are downscaled
+    (aspect preserved) before writing. The policy's vision processor resizes frames far
+    below this at train and deploy time anyway, and smaller frames export much faster --
+    the full-resolution recordings stay untouched. 0 keeps native resolution."""
+
     units: Literal["lerobot", "degrees"] = "lerobot"
     """Joint units written to the dataset. ``lerobot`` (default) converts our calibrated
     degrees to lerobot's normalized wire units (arm joints [-100, 100] over the calibrated
@@ -292,7 +298,8 @@ def export_dataset(config: Config) -> ExportResult:
             staged.append({"dir": episode.segment_id, "name": episode.name, "task": episode.task})
         if not staged:
             raise SystemExit("nothing to export")
-        print(f"writing {len(staged)} episode(s) + encoding videos (local, may take a few minutes; nothing uploads without --push)...")
+        size_note = f"frames capped at {config.max_height}px tall" if config.max_height else "native resolution"
+        print(f"writing {len(staged)} episode(s) + encoding videos ({size_note}; local, nothing uploads without --push)...", flush=True)
 
         motor_names = list(DEFAULT_MOTOR_NAMES)
         dim = int(np.load(stage_dir / staged[0]["dir"] / "action.npy").shape[1])
@@ -301,6 +308,7 @@ def export_dataset(config: Config) -> ExportResult:
                 {
                     "repo_id": config.repo_id,
                     "fps": config.fps,
+                    "max_height": config.max_height,
                     "motor_names": motor_names if dim == len(motor_names) else [f"motor_{i}" for i in range(dim)],
                     "cameras": [camera_keys[camera] for camera in cameras],
                     "episodes": staged,
@@ -309,6 +317,7 @@ def export_dataset(config: Config) -> ExportResult:
         )
 
         # Hand off to the isolated lerobot environment (first run solves + installs it).
+        print("starting the LeRobot writer in the isolated export env (first run installs it — can take a while)...", flush=True)
         command = ["pixi", "run", "--environment", "export", "python", str(writer), "--root", str(config.root), "--stage", str(stage_dir)]
         if config.push:
             command.append("--push")
