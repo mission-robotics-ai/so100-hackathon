@@ -189,10 +189,21 @@ def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
     arm whose middle happens to sit near the wrap point gets +-360 deg jumps (seen on real
     hardware). Returns the re-read (homed) middle positions.
 
+    If the homed Present_Position doesn't re-zero on the first read, escalate before failing:
+    a settle re-read, then a brief torque-enable kick (some Feetech firmware only applies a
+    stored Homing_Offset on a torque edge). Success at any stage returns normally; only after
+    all stages fail do we raise, with a diagnostic carrying the stored offsets and every
+    snapshot so the cause (firmware-not-applying vs. arm-moved) is readable off the error.
+
     On any failure the previous offsets are restored (best-effort), so a transient bus
     flake doesn't leave the servos half-homed with the on-disk calibration silently stale.
     """
     half_turn = TICKS_PER_REV // 2 - 1  # 2047
+
+    def off_center(positions: list[int]) -> list[str]:
+        """Motors whose homed Present_Position isn't ~half_turn (>30 ticks off center)."""
+        return [f"{name} reads {p}" for name, p in zip(DEFAULT_MOTOR_NAMES, positions, strict=True) if abs(p - half_turn) > 30]
+
     previous = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
     try:
         for motor_id in bus.motor_ids:
@@ -200,15 +211,58 @@ def _write_half_turn_homing(bus: FeetechBus) -> list[int]:
         mechanical = bus.read_positions(attempts=5)
         for motor_id, mech in zip(bus.motor_ids, mechanical, strict=True):
             bus.write_homing_offset(motor_id, mech - half_turn)
-        homed = bus.read_positions(attempts=5)
-        drifted = [f"{name} reads {p}" for name, p in zip(DEFAULT_MOTOR_NAMES, homed, strict=True) if abs(p - half_turn) > 30]
-        if drifted:  # the arm moved between the two reads, or a write was lost
-            raise RuntimeError(
-                f"Homing check failed — the arm doesn't look like it's in the middle pose "
-                f"(servos should read ~{half_turn} at center). Hold the arm still in the middle "
-                f"pose and retry. Readings: {', '.join(drifted)}"
-            )
-        return homed
+        immediate = bus.read_positions(attempts=5)
+        if not off_center(immediate):
+            return immediate
+
+        # Present_Position didn't re-zero on the immediate read. With the write-verify fix in
+        # place (feetech.py _write_register_verified), the Homing_Offset register reads back
+        # CORRECT — so the value is stored; the servo just hasn't applied it to Present_Position.
+        # Seen on this firmware batch (2026-07-16, real leader arm): wrist_flex 2470 /
+        # wrist_roll 1943 / gripper 1634, and gripper 1634 -> 1635 across two runs — ONE tick
+        # apart on a closed gripper resting on its hard stop, i.e. the arm was NOT moving, so
+        # "the arm drifted between reads" is ruled out and a not-yet-applied stored offset is
+        # the live hypothesis. Escalate before failing; a sane-firmware arm never reaches here.
+        # (a) settle re-read: rules out a slow async EEPROM commit lagging the apply.
+        time.sleep(0.3)
+        settled = bus.read_positions(attempts=5)
+        if not off_center(settled):
+            return settled
+        # (b) torque kick: some Feetech firmware only latches a stored Homing_Offset into
+        # Present_Position on a torque-enable edge. Toggle on->off back-to-back (set_torque
+        # writes TORQUE_ENABLE then LOCK per motor) — kept brief so the servo can't fight the
+        # hand holding the middle pose before torque drops again.
+        bus.set_torque(True)
+        bus.set_torque(False)
+        post_kick = bus.read_positions(attempts=5)
+        if not off_center(post_kick):
+            return post_kick
+
+        # (c) still off center after settle and kick. Fail loud with the full diagnostic so the
+        # snapshots discriminate the cause: stored offsets that read back at the intended value
+        # + three position snapshots that BARELY MOVE across stages => firmware isn't applying
+        # the stored offset (needs a different trigger); snapshots that swing => the arm moved.
+        stored = [bus.read_homing_offset(motor_id) for motor_id in bus.motor_ids]
+
+        def row(label: str, values: list[int]) -> str:
+            return f"  {label:<10} " + "  ".join(f"{name}={v}" for name, v in zip(DEFAULT_MOTOR_NAMES, values, strict=True))
+
+        raise RuntimeError(
+            "Homing check failed — after writing Homing_Offset the servos should read "
+            f"~{half_turn} at center, but Present_Position did not re-zero. Off center: {', '.join(off_center(post_kick))}.\n"
+            "If the stored offsets below are the intended values and the three snapshots barely change, this "
+            "firmware batch is storing Homing_Offset without applying it to Present_Position (a settle and a "
+            "torque kick didn't trigger it) — re-run, and if it persists this arm needs a different homing-apply "
+            "trigger. If instead the snapshots swing, the arm moved between reads — hold it still in the middle "
+            "pose and retry.\n"
+            + row("stored", stored)
+            + "\n"
+            + row("immediate", immediate)
+            + "\n"
+            + row("settled", settled)
+            + "\n"
+            + row("post-kick", post_kick)
+        )
     except RuntimeError:
         try:
             for motor_id, offset in zip(bus.motor_ids, previous, strict=True):
