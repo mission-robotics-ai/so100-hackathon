@@ -293,8 +293,10 @@ def main(config: Config) -> None:
             raise SystemExit(result.returncode)
 
     print(f"\ndone: {output}")
+    rel_output = f"./datasets/{config.repo_id}"
+    print(f"next — fine-tune on New Theory: pixi run newt finetune --dataset {rel_output}")
     if not config.push:
-        print(f"push it later with: pixi run export-lerobot -- --dataset {config.dataset} --repo-id {config.repo_id} --push")
+        print(f"(prefer Hugging Face? push with: pixi run export-lerobot -- --dataset {config.dataset} --repo-id {config.repo_id} --push)")
 
 
 if __name__ == "__main__":
