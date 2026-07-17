@@ -4,8 +4,9 @@ order: 3
 ---
 
 Everything you just recorded is queryable right now, through the catalog served by
-`pixi run so100-server` at `rerun+http://localhost:51234`. The task and tag you typed on
-the Collect page are real columns.
+`pixi run so100-server` at `rerun+http://localhost:51234`. On disk, each episode is a
+file at `recordings/<dataset>/<episode>.rrd` in your kit clone. The task and tag you
+typed on the Collect page are real columns.
 
 ## List what you have
 
