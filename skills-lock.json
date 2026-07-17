@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "rerun-blueprint": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-blueprint/SKILL.md",
+      "computedHash": "3fd5a39854f48d2a5cdc912176b4b54af5afc79a3470e07ff3597db17921018f"
+    },
+    "rerun-catalog-queries": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-catalog-queries/SKILL.md",
+      "computedHash": "9c5029e3ddee453dea047542cbe2851bf754d38b11eda726b2f2e9df8f0626e7"
+    },
+    "rerun-chunk-processing": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-chunk-processing/SKILL.md",
+      "computedHash": "d5bbacacf9568e373321a3e35580bef85b3bf43ce0aa7d32bc4aba656b1e52c2"
+    },
+    "rerun-data-model": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-data-model/SKILL.md",
+      "computedHash": "bb89dc224ec251c1691be9b69d9eefb0c49670b537aacc331ec29e2afe27d831"
+    },
+    "rerun-lerobot": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-lerobot/SKILL.md",
+      "computedHash": "0e49a74e2c1f92167c083c3689e9fe908a26f3932cad7936fbac88dcacecc696"
+    },
+    "rerun-mcap": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-mcap/SKILL.md",
+      "computedHash": "3f460b4c24ec385e5bd45a7f18e394cde3b76306780a0dcc694ad9a31b7e1a95"
+    },
+    "rerun-parquet": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-parquet/SKILL.md",
+      "computedHash": "07a504695b840a123d8cd60b498052864766bd151cf961a3de650f0339e077b9"
+    },
+    "rerun-urdf": {
+      "source": "rerun-io/rerun",
+      "sourceType": "github",
+      "skillPath": "skills/rerun-urdf/SKILL.md",
+      "computedHash": "d42f79852416cb1e338b7f9ec79739f5fc04c62427407359745c2e917596ae50"
+    }
+  }
+}

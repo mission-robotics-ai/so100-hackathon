@@ -159,6 +159,19 @@ see [how fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-fine
 An arm calibrated here is already set up for it (the dual-written calibration above);
 just make sure nothing else is holding the follower's serial port.
 
+## Agent skills
+
+[Rerun's agent skills](https://github.com/rerun-io/rerun/tree/main/skills) are checked
+in under `.agents/skills/` and recorded in `skills-lock.json`, with symlinks in
+`.claude/skills/` — so Claude Code, Codex, and other agents pick them up automatically
+when working in this repo.
+
+To refresh the checked-in snapshot to the newest maintained versions, run:
+
+```bash
+npx skills update --project --yes
+```
+
 ## Development
 
 ```bash
