@@ -54,7 +54,7 @@ lerobot = "==0.4.2"
 
 [tool.pixi.tasks.export-lerobot]
 cmd = "python tools/apps/export_lerobot.py"
-description = "Export a recorded dataset to LeRobot v3 under datasets/ (--push to upload to the Hugging Face Hub)"
+description = "Export a recorded dataset to LeRobot v3 under datasets/ (local; add --push to also upload to the Hugging Face Hub)"
 
 [tool.pixi.feature.dev.dependencies]
 ruff = "*"

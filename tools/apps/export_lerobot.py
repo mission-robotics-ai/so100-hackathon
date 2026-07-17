@@ -268,6 +268,7 @@ def main(config: Config) -> None:
             staged.append({"dir": episode.segment_id, "name": episode.name, "task": episode.task})
         if not staged:
             raise SystemExit("nothing to export")
+        print(f"writing {len(staged)} episode(s) + encoding videos (local, may take a few minutes; nothing uploads without --push)...")
 
         motor_names = list(DEFAULT_MOTOR_NAMES)
         dim = int(np.load(stage_dir / staged[0]["dir"] / "action.npy").shape[1])
