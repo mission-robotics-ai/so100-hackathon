@@ -36,6 +36,11 @@ rerun-sdk = "==0.34.1"
 feetech-servo-sdk = ">=1.0.0"
 datafusion = ">=53,<54"  # rerun-sdk 0.34 requires datafusion major 53
 markdown = ">=3.6"
+# The New Theory inference SDK + `newt` CLI, bundled so one `pixi install` gives
+# hackers the whole toolchain. Pinned to a SHA for event-week safety: an upstream
+# push can't break a hacker's install mid-event. Core deps only (msgpack/httpx/
+# websockets/pillow/numpy) — the heavy [hardware]/[recording] extras stay out.
+newt = { git = "https://github.com/new-theory-research/newt-python.git", rev = "975886a8717dc358c5520916131c5451593b5b79" }
 
 # LeRobot pins an older rerun-sdk which conflicts with ours, so the export env is fully
 # isolated (no default feature). export_lerobot.py (default env) queries the catalog and
