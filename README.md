@@ -15,7 +15,7 @@ then clone the repo and install its environment:
 
 ```bash
 curl -fsSL https://pixi.sh/install.sh | sh
-git clone https://github.com/rerun-io/so100-hackathon.git
+git clone https://github.com/mission-robotics-ai/so100-hackathon.git
 cd so100-hackathon
 pixi install
 ```
@@ -26,11 +26,28 @@ Plug in the arm(s) — they show up as `/dev/cu.usbmodem<USB_ID>`.
 
 ## START HERE
 
-```bash 
-pixi run learn → http://localhost:3000
+The guided course site is **the canonical path** — it walks you through the whole
+loop (set up, collect, refine, prepare, deploy) from the browser:
+
+```bash
+pixi run learn            # then open http://localhost:3000
 ```
 
-## CLI Set up: test and calibrate your robot
+Follow it end to end; you should not need anything else. Everything below is the
+compressed, CLI-only version of exactly those five course steps — a reference for
+debugging or terminal-only use, not a second path to choose.
+
+## Set up: test and calibrate your robot
+
+Start the long-lived local data server first and leave it running all day (through
+breaks, closed browser tabs, new datasets):
+
+```bash
+pixi run so100-server     # gRPC proxy :9876 + catalog :51234 + control API :8000
+```
+
+It does **not** hold the serial ports — arms attach on demand, so every tool below
+works while it runs. Then, in order:
 
 ```bash
 pixi run check-cameras                    # cameras only: probe every layer, stream what works
@@ -69,16 +86,9 @@ i.e. the *action*) during teleop.
 
 ## Collect: record episodes to a dataset
 
-Start the long-lived local data server once and leave it running (through breaks, closed
-browser tabs, new datasets):
-
-```bash
-pixi run so100-server     # gRPC proxy :9876 + catalog :51234 + control API :8000
-```
-
-On startup it re-registers every `recordings/<dataset>/<episode>.rrd` found on disk, so
-restarting it loses nothing. It does **not** hold the serial ports — arms attach on
-demand, so calibration/teleop work while it runs.
+The server from Set up stays running through all of this. On startup it re-registers
+every `recordings/<dataset>/<episode>.rrd` found on disk, so restarting it loses
+nothing.
 
 Record an episode from the CLI (`tools/apps/record_episode.py` — it opens the arms
 itself, so the server must not be holding them):
@@ -118,22 +128,35 @@ The metadata stamped at record time comes back as `property:...` columns on the
 catalog's segment table — that's what the tag filter runs on (DataFusion), and the
 entity query returns a pandas DataFrame.
 
-## Train: prepare for training
+## Prepare: export for training
 
-Export to LeRobot v3 (only `"Good episode"` takes by default; `--tag ""` for all):
+Fine-tuning runs on New Theory's GPUs. One command does the whole handoff — it exports
+the dataset to LeRobot v3 under `datasets/local/<task>/`, then launches `newt finetune`
+on that folder (`--dry-run` to stop after the export):
 
 ```bash
-pixi run export-lerobot -- --dataset my_task --repo-id <hf-user>/my_task           # -> datasets/<hf-user>/my_task
-pixi run -e export hf auth login                                                   # once
-pixi run export-lerobot -- --dataset my_task --repo-id <hf-user>/my_task --push    # + upload (private repo)
+pixi run finetune -- --dataset my_task
 ```
 
-The first run solves the isolated `export` environment — LeRobot's rerun-sdk pin
+It trains on every usable episode regardless of tag (`--tag "Good episode"` to apply
+your curation); episodes missing a camera or motion stream are reported and skipped.
+See the [hackathon fine-tune guide](https://missionrobotics.ai/hackers/fine-tune).
+
+Prefer Hugging Face / the broader LeRobot ecosystem? The manual export writes the same
+LeRobot v3 dataset itself (only `"Good episode"` takes by default; `--tag ""` for all)
+and can push it to the Hub:
+
+```bash
+pixi run export-lerobot -- --dataset my_task --repo-id <team>/my_task           # -> datasets/<team>/my_task
+pixi run -e export hf auth login                                                # once
+pixi run export-lerobot -- --dataset my_task --repo-id <team>/my_task --push    # + upload (private repo)
+```
+
+The first export solves the isolated `export` environment — LeRobot's rerun-sdk pin
 conflicts with the repo's, so `tools/apps/export_lerobot.py` stages episodes from the
 catalog and hands off to `_export_lerobot_writer.py` inside that env. Camera streams
 export as `observation.images.top` / `.side` in cam-index order (`--camera-names` to
-override). From here, fine-tuning runs on NewTheory's infrastructure via their `newt`
-CLI — see [how fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-finetune-works).
+override).
 
 Joint units are converted on export: recordings are in calibrated degrees, but the
 dataset is written in **LeRobot's normalized wire units** (arm joints [-100, 100] over
@@ -156,9 +179,9 @@ It ramps gently to the starting pose, plays the trajectory, streams the replayed
 to the live proxy, and releases torque when done. Keep a hand near the arm on the first
 run.
 
-Running a trained policy is NewTheory's side of the loop: once your `newt finetune` run
-is live, the `newt` SDK drives the follower directly (`Robot(model="<your-tag>")`) —
-see [how fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-finetune-works).
+Running a trained policy is NewTheory's side of the loop: once your `pixi run finetune`
+run is live, the `newt` SDK drives the follower directly (`Robot(model="<your-tag>")`) —
+see the [hackathon fine-tune guide](https://missionrobotics.ai/hackers/fine-tune).
 An arm calibrated here is already set up for it (the dual-written calibration above);
 just make sure nothing else is holding the follower's serial port.
 

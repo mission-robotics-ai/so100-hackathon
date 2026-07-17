@@ -1,7 +1,9 @@
 # Agent notes
 
 SO-100/101 arm, end to end: teleop data collection → Rerun recordings → local catalog →
-LeRobot v3 export → New Theory fine-tune → replay. README has the full walkthrough.
+LeRobot v3 export → New Theory fine-tune → replay. The canonical walkthrough is the
+`pixi run learn` course site (`web/content/*.md`); the README is its compressed
+CLI-only mirror — keep the two consistent, and learn wins on conflict.
 
 - **pixi only** (no pip/uv). Deps in `pyproject.toml`, run via `pixi run <task>`.
   The `export` env is isolated on purpose (LeRobot's rerun-sdk pin conflicts); `newt`
