@@ -35,7 +35,7 @@ duration, and size. The metadata lives in `property:...` columns:
 pixi run query-dataset -- --dataset <name> --tag "Good episode"
 ```
 
-Only the episodes you tagged as good — this same filter is what the Train page's export
+Only the episodes you tagged as good — this same filter is what the Prepare page's export
 uses by default, so tagging *is* curating. Tagged something wrong? Just re-record; storage
 is cheap, and bad episodes stay useful as counterexamples.
 

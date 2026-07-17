@@ -1,5 +1,5 @@
 ---
-title: "Train: prepare for training"
+title: "Prepare: export for training"
 order: 4
 ---
 
