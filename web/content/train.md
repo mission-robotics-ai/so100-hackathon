@@ -37,7 +37,7 @@ The run is *language-conditioned*: the task sentence you typed while recording b
 command your trained model answers. Point the `newt` CLI at the folder you just wrote:
 
 ```bash
-newt finetune --dataset ./datasets/<team>/<task>
+pixi run newt finetune --dataset ./datasets/<team>/<task>
 ```
 
 It uploads the dataset, launches a fine-tune of the NT-0 SO-101 base model, and prints a job
