@@ -56,6 +56,10 @@ lerobot = "==0.4.2"
 cmd = "python tools/apps/export_lerobot.py"
 description = "Export a recorded dataset to LeRobot v3 under datasets/ (local; add --push to also upload to the Hugging Face Hub)"
 
+[tool.pixi.tasks.finetune]
+cmd = "python tools/apps/finetune.py"
+description = "One command from a recorded dataset to a fine-tune on New Theory: exports (by name) then launches `newt finetune` (--dry-run to stop after the export)"
+
 [tool.pixi.feature.dev.dependencies]
 ruff = "*"
 pytest = ">=8.0.0,<9"

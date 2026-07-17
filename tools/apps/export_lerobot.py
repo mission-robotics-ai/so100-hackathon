@@ -228,7 +228,29 @@ class Config:
     """so100-server catalog port."""
 
 
-def main(config: Config) -> None:
+@dataclasses.dataclass
+class ExportResult:
+    """Outcome of a finished export, for callers that drive the export in-process
+    (e.g. the one-command ``finetune`` wrapper) and want the honest episode tally."""
+
+    output: Path
+    """Directory the LeRobot dataset was written to (``<root>/<repo-id>``)."""
+
+    total: int
+    """Episodes selected for export (after the tag filter)."""
+
+    staged: int
+    """Episodes actually written (had at least one complete frame)."""
+
+    skipped: list[str]
+    """Names of episodes dropped for missing a stream (no complete frames)."""
+
+
+def export_dataset(config: Config) -> ExportResult:
+    """Run the export and return its tally. Prints the same progress the CLI shows;
+    the CLI's closing ``done``/``next`` lines are added by ``main`` so this function
+    stays reusable by other tools. Raises ``SystemExit`` on the same conditions the
+    CLI does (already-exported without ``--push``, nothing to export, ...)."""
     writer = REPO_ROOT / "tools" / "apps" / "_export_lerobot_writer.py"
     output = config.root / config.repo_id
 
@@ -259,10 +281,12 @@ def main(config: Config) -> None:
     with tempfile.TemporaryDirectory(prefix="lerobot-stage-") as stage:
         stage_dir = Path(stage)
         staged = []
+        skipped: list[str] = []
         for episode in episodes:
             frames = stage_episode(dataset, episode, action, state, cameras, camera_keys, normalize, stage_dir / episode.segment_id)
             if frames == 0:
                 print(f"  {episode.name}: no complete frames, skipped")
+                skipped.append(episode.name)
                 continue
             print(f"  {episode.name}: {frames} frames")
             staged.append({"dir": episode.segment_id, "name": episode.name, "task": episode.task})
@@ -292,7 +316,13 @@ def main(config: Config) -> None:
         if result.returncode != 0:
             raise SystemExit(result.returncode)
 
-    print(f"\ndone: {output}")
+    return ExportResult(output=output, total=len(episodes), staged=len(staged), skipped=skipped)
+
+
+def main(config: Config) -> None:
+    result = export_dataset(config)
+
+    print(f"\ndone: {result.output}")
     rel_output = f"./datasets/{config.repo_id}"
     print(f"next — fine-tune on New Theory: pixi run newt finetune --dataset {rel_output}")
     if not config.push:
