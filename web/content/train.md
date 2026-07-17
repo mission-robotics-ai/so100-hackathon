@@ -44,7 +44,7 @@ It uploads the dataset, launches a fine-tune of the NT-0 SO-101 base model, and 
 handle. To watch the run — and everything around it, from your API key to the trained
 checkpoint:
 
-**→ [How fine-tuning works](https://newtheory-docs.vercel.app/docs/nt-0/how-finetune-works)**
+**→ [Fine-tune on the hackathon guide](https://missionrobotics.ai/hackers/fine-tune)**
 
 ## Prefer Hugging Face?
 
