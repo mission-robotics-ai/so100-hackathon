@@ -17,7 +17,7 @@ pixi run query-dataset
 lists the datasets in the catalog. Point it at one to see its episodes:
 
 ```bash
-pixi run query-dataset -- --dataset my_task
+pixi run query-dataset -- --dataset <name>
 ```
 
 This prints the **segment table** — one row per episode with its name, task, tag,
@@ -32,7 +32,7 @@ duration, and size. The metadata lives in `property:...` columns:
 ## Curate: filter by tag
 
 ```bash
-pixi run query-dataset -- --dataset my_task --tag "Good episode"
+pixi run query-dataset -- --dataset <name> --tag "Good episode"
 ```
 
 Only the episodes you tagged as good — this same filter is what the Train page's export
@@ -45,7 +45,7 @@ Pull a joint-position series into pandas (find entity paths in the viewer's tree
 `follower/position`):
 
 ```bash
-pixi run query-dataset -- --dataset my_task --episode episode_01 --entity follower/position
+pixi run query-dataset -- --dataset <name> --episode episode_01 --entity follower/position
 ```
 
 The same, from Python — the catalog speaks DataFusion, so this scales from one episode to
