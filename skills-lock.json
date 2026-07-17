@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "pixi-package-manager": {
+      "source": "uw-ssec/rse-plugins",
+      "sourceType": "github",
+      "skillPath": "plugins/scientific-python-development/skills/pixi-package-manager/SKILL.md",
+      "computedHash": "cd14998404b0e2db07451c6ed258d74d8604e8c471e9b590daabd5013c76af8f"
+    },
     "rerun-blueprint": {
       "source": "rerun-io/rerun",
       "sourceType": "github",
