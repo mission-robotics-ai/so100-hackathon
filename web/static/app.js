@@ -76,11 +76,13 @@ function subscribeStatus(subscriber) {
   }
 }
 
+// text: a string, or a function returning the current string (for content that changes
+// after the button is wired, e.g. a live error message).
 function wireCopy(button, text) {
   const original = button.innerHTML; // restored after the feedback flash (text or icon)
   button.addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(typeof text === "function" ? text() : text);
       button.textContent = "Copied!";
     } catch {
       button.textContent = "Copy failed";
@@ -462,7 +464,10 @@ function initSetup(root) {
           <button type="button" class="collect-btn outline setup-stop" hidden>
             <span class="stop-square"></span>${step.stopLabel}</button>
         </div>
-        <p class="setup-error" hidden></p>
+        <div class="setup-error-row" hidden>
+          <p class="setup-error"></p>
+          <button type="button" class="copy-btn error-copy" title="Copy error" aria-label="Copy error">${COPY_SVG}</button>
+        </div>
       </div>
     </section>`,
     )
@@ -501,7 +506,9 @@ function initSetup(root) {
       next: q(".setup-next"),
       stop: q(".setup-stop"),
       desc: q(".setup-step-desc"),
+      errorRow: q(".setup-error-row"),
       error: q(".setup-error"),
+      errorCopy: q(".error-copy"),
     };
   }
 
@@ -568,7 +575,7 @@ function initSetup(root) {
       if (mineRunning) localErrors[tool] = "";
       const error = (setup.tool === tool && !mineRunning && setup.error) || localErrors[tool];
       s.error.textContent = error;
-      s.error.hidden = !error;
+      s.errorRow.hidden = !error;
     }
 
     // Global conditions live ONCE, in the shared overlay -- not per section.
@@ -605,6 +612,7 @@ function initSetup(root) {
   }
 
   for (const [tool, s] of Object.entries(sections)) {
+    wireCopy(s.errorCopy, () => s.error.textContent);
     s.head.addEventListener("click", () => {
       setOpen(openTool === tool ? null : tool);
       render(lastStatus);

@@ -378,6 +378,27 @@ th { background: var(--code-bg); }
   white-space: nowrap;
 }
 .setup-error { margin: 0; color: var(--error); font-size: 0.82rem; }
+/* Error row: text plus a quiet copy icon (same reveal-on-hover idiom as .pre-copy),
+   so a failed error string can go straight into a bug report or a Claude prompt. */
+.setup-error-row { display: flex; align-items: flex-start; gap: 0.4rem; }
+.setup-error-row .setup-error { flex: 1; }
+.setup-error-row .copy-btn.error-copy {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0.1rem 0.3rem;
+  border-color: var(--border-strong);
+  background: var(--bg);
+  color: var(--subtle);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.setup-error-row:hover .copy-btn.error-copy,
+.setup-error-row .copy-btn.error-copy:focus-visible { opacity: 1; }
+.setup-error-row .copy-btn.error-copy:hover { border-color: var(--primary); color: var(--fg); }
 .setup .viewer-box {
   flex: 1;
   min-width: 0;
