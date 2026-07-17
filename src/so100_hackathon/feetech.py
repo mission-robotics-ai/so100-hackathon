@@ -164,6 +164,34 @@ class FeetechBus:
                     time.sleep(0.01)
         raise RuntimeError(f"{self.port}: read from motor {motor_id} addr {address} failed: {self.packet_handler.getTxRxResult(comm)}")
 
+    def _write_register_verified(self, motor_id: int, address: int, value: int, size: int) -> None:
+        """Write an EEPROM register and confirm it actually landed, working around a
+        re-engaging Lock.
+
+        Homing_Offset / Position_Limit are EEPROM, gated by the Lock register (addr 55).
+        The caller clears Lock once (``set_torque(False)``), but on some STS3215 firmware
+        batches Lock re-engages after the first EEPROM write of a sequence, so the servo
+        ACKs every write after it (protocol success) while silently discarding the value —
+        exactly the "or a write was lost" case the calibration code names. Seen on real
+        hardware: motor 1 took, motors 2-6 kept their old offset (~raw position).
+
+        So read the register back; on mismatch, explicitly clear THIS motor's Lock and
+        rewrite, up to 3 attempts. ``value`` is the raw register word (sign-magnitude
+        already encoded by the caller), so the raw read-back compares directly. Still
+        wrong after 3 tries -> raise (fail loud rather than persist a dropped write).
+        """
+        for attempt in range(3):
+            if attempt:  # a prior write was silently dropped: Lock re-engaged, clear it for this motor
+                self._write_register(motor_id, ADDR_LOCK, 0, 1)
+            self._write_register(motor_id, address, value, size)
+            if self._read_register(motor_id, address, size) == value:
+                return
+        readback = self._read_register(motor_id, address, size)
+        raise RuntimeError(
+            f"{self.port}: motor {motor_id} EEPROM write to addr {address} not honored after 3 attempts "
+            f"(wrote {value}, reads {readback}) — servo Lock stuck engaged?"
+        )
+
     def read_positions(self, *, attempts: int = 1) -> list[int]:
         """Raw tick positions for all motors. Extra attempts cover reads right after EEPROM
         writes, whose late status replies can desync the next transaction."""
@@ -219,15 +247,19 @@ class FeetechBus:
         if abs(offset) > 2048:
             raise ValueError(f"homing offset {offset} does not fit the servo's 11-bit sign-magnitude register")
         offset = min(max(offset, -2047), 2047)
-        self._write_register(motor_id, ADDR_HOMING_OFFSET, _encode_sign_magnitude(offset, 11), 2)
+        self._write_register_verified(motor_id, ADDR_HOMING_OFFSET, _encode_sign_magnitude(offset, 11), 2)
 
     def read_homing_offset(self, motor_id: int) -> int:
         return _sign_magnitude(self._read_register(motor_id, ADDR_HOMING_OFFSET, 2), 11)
 
     def write_position_limits(self, motor_id: int, range_min: int, range_max: int) -> None:
-        """Servo-side motion limits (EEPROM, torque off) — lerobot writes the swept range here."""
-        self._write_register(motor_id, ADDR_MIN_POSITION_LIMIT, range_min, 2)
-        self._write_register(motor_id, ADDR_MAX_POSITION_LIMIT, range_max, 2)
+        """Servo-side motion limits (EEPROM, torque off) — lerobot writes the swept range here.
+
+        Verified like the homing offsets: these run right after the homing writes with no
+        second Lock clear, so a re-engaged Lock would drop them just as silently.
+        """
+        self._write_register_verified(motor_id, ADDR_MIN_POSITION_LIMIT, range_min, 2)
+        self._write_register_verified(motor_id, ADDR_MAX_POSITION_LIMIT, range_max, 2)
 
     def sync_write_goal(self, positions: list[int]) -> None:
         """One Goal_Position sync-write for all motors (fire-and-forget, servos send no reply)."""
