@@ -40,6 +40,13 @@ the hackathon, as close to the other rigs as you can — pooled training assumes
 viewpoints). Avoid wrist-mounted cameras: the SO-101 base model these fine-tunes start
 from was trained on third-person views only.
 
+Only external USB cameras are picked up automatically — the Mac's built-in webcam and
+iPhone Continuity Cameras are skipped (the server prints each skipped camera and its
+index at connect time). Short a USB camera? You can opt one in by starting the server
+with its index, e.g. `pixi run so100-server --cameras 0 2` — but remember the built-in
+camera moves with the laptop lid, so the view your policy trains on only stays valid if
+the laptop stays put.
+
 ## Prefer the terminal?
 
 The standalone CLI records + registers without touching this page (it opens the arms

@@ -81,7 +81,7 @@ import tyro
 
 from so100_hackathon.apis.log_arms import ArmSession, LogArmsConfig
 from so100_hackathon.calibration import load_arm_kind
-from so100_hackathon.cameras import CameraSource, RecordingFanout
+from so100_hackathon.cameras import CameraSource, RecordingFanout, require_camera_indices
 from so100_hackathon.rerun_config import LiveViewerConfig
 from so100_hackathon.setup_phases import PHASE_PREFIX
 from so100_hackathon.takes import (
@@ -217,10 +217,11 @@ class Recorder:
     ``update_episode`` rewrites a finished episode's metadata via an ``edits`` layer.
     """
 
-    def __init__(self, catalog_uri: str, recordings_dir: Path, arm_fps: float) -> None:
+    def __init__(self, catalog_uri: str, recordings_dir: Path, arm_fps: float, cameras: tuple[int, ...] | None = None) -> None:
         self._catalog_uri = catalog_uri
         self._recordings_dir = recordings_dir
         self._arm_fps = arm_fps
+        self._cameras = cameras
         self._lock = threading.Lock()
         self._source: CameraSource | ArmSession | None = None
         self._fake = False
@@ -257,6 +258,11 @@ class Recorder:
         with self._lock:
             if self._source is not None:
                 return self.state()
+            # Explicit --cameras indices are used verbatim (no auto-detect probe), so
+            # check them here, before the proxy spawns -- a bad index must fail the
+            # connect loudly, not a camera thread quietly after "connected".
+            if self._cameras is not None:
+                require_camera_indices(self._cameras)
             # This session's throwaway proxy: the page's viewer starts from a clean state.
             proxy_port = free_port()
             proxy = spawn_proxy(proxy_port)
@@ -279,9 +285,9 @@ class Recorder:
             self._recording_id = live_id
 
             if fake:
-                self._source = CameraSource(rec)
+                self._source = CameraSource(rec, cameras=self._cameras)
             else:
-                self._source = ArmSession(LogArmsConfig(fps=self._arm_fps, teleop=True, rr_config=_NoViewerConfig()), rec)
+                self._source = ArmSession(LogArmsConfig(fps=self._arm_fps, teleop=True, cameras=self._cameras, rr_config=_NoViewerConfig()), rec)
             self._fake = fake
             self._source.start()
             self._source.begin(rec)  # blueprint + static geometry for the live stream
@@ -877,7 +883,7 @@ def main(config: Config) -> None:
         register_blueprint(catalog_uri, name, blueprint_file)
         print(f"[scan]      dataset '{name}': default blueprint re-applied", flush=True)
 
-    recorder = Recorder(catalog_uri, config.recordings_dir, arm_fps=config.fps)
+    recorder = Recorder(catalog_uri, config.recordings_dir, arm_fps=config.fps, cameras=config.cameras)
     setup = SetupRunner(calibration_dir=REPO_ROOT / "calibrations")
     httpd: ThreadingHTTPServer | None = None
     try:
@@ -927,6 +933,13 @@ class Config:
 
     fps: float = 30.0
     """Target logging rate (arm poll rate) once the arms are connected."""
+
+    cameras: tuple[int, ...] | None = None
+    """Camera indices to record from (as printed by camera detection at connect time).
+    Default: auto-detect — with arms this skips the Mac's built-in webcam and phone
+    Continuity Cameras; ``--fake`` (no-hardware) mode keeps every camera, built-in
+    included, since that may be all there is. Pass indices explicitly to override
+    either (e.g. the built-in webcam as a second view when you're short a USB camera)."""
 
 
 if __name__ == "__main__":

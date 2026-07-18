@@ -108,6 +108,22 @@ FrameSink = rr.RecordingStream | RecordingFanout
 """What the per-frame loops log into: a single recording or a fan-out over several."""
 
 
+def require_camera_indices(indices: tuple[int, ...]) -> None:
+    """Fail loudly if an explicitly requested camera index cannot deliver a frame.
+
+    Auto-detection only returns cameras that answered a probe, but explicit indices
+    (``--cameras``) are used verbatim -- a typo'd or unplugged index would otherwise
+    only fail later, inside a background :class:`CameraStreamer` thread, after the
+    server already reported itself connected and recordable.
+    """
+    for index in indices:
+        cap = cv2.VideoCapture(index)
+        ok = cap.isOpened() and cap.read()[0]
+        cap.release()
+        if not ok:
+            raise RuntimeError(f"camera {index} (from --cameras) is not delivering frames -- run `pixi run check-cameras` to see what is live")
+
+
 class CameraSource:
     """A camera-only data source (no arms), for testing the collection loop without hardware.
 
@@ -116,8 +132,8 @@ class CameraSource:
     :meth:`set_output` redirects them (e.g. to a live+file fan-out while a take records).
     """
 
-    def __init__(self, rec: rr.RecordingStream, jpeg_quality: int = 75) -> None:
-        indices = detect_camera_indices(include_all=True)
+    def __init__(self, rec: rr.RecordingStream, jpeg_quality: int = 75, cameras: tuple[int, ...] | None = None) -> None:
+        indices = cameras if cameras is not None else detect_camera_indices(include_all=True)
         self.streamers = [CameraStreamer(index, rec=rec, jpeg_quality=jpeg_quality) for index in indices]
         print(f"data source:        {len(self.streamers)} camera(s) (fake, no arms)", flush=True)
 
